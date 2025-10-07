@@ -132,7 +132,11 @@ def get_all_contacts():
         'res.partner',
         'read',
         [contact_ids],
-        {'fields': ['id', 'name', 'email', 'phone', 'x_studio_your_business', 'country_id', 'state_id']}
+        {'fields': [
+            'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
+            'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
+            'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
+        ]}
     )
     
     # Tambahkan informasi country dan state yang lebih detail
@@ -164,6 +168,23 @@ def get_all_contacts():
             # Jika sudah integer, biarkan saja
         else:
             contact['state_id'] = None
+            
+        # Proses category_id (tags) - ambil nama tag jika ada
+        if contact.get('category_id') and contact['category_id'] != False:
+            if isinstance(contact['category_id'], list):
+                contact['tags'] = [tag[1] for tag in contact['category_id']]  # Ambil nama tag
+                contact['tag_ids'] = [tag[0] for tag in contact['category_id']]  # Ambil ID tag
+            else:
+                contact['tags'] = [contact['category_id']]
+                contact['tag_ids'] = [contact['category_id']]
+        else:
+            contact['tags'] = []
+            contact['tag_ids'] = []
+            
+        # Proses field yang mungkin False menjadi None untuk konsistensi
+        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+            if contact.get(field) == False:
+                contact[field] = None
     
     return ordered_jsonify({
         'success': True,
@@ -201,6 +222,58 @@ def create_contact():
                 'success': False,
                 'error': f'x_studio_your_business must be one of: {valid_business_types}'
             }), 400
+        
+        # Validasi NPWP (vat) - format Indonesia
+        if 'vat' in data and data['vat']:
+            vat = data['vat'].replace('.', '').replace('-', '').replace(' ', '')
+            if not vat.isdigit() or len(vat) != 15:
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'NPWP must be 15 digits (format: XX.XXX.XXX.X-XXX.XXX)'
+                }), 400
+        
+        # Validasi email format
+        if 'email' in data and data['email']:
+            import re
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            if not re.match(email_pattern, data['email']):
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'Invalid email format'
+                }), 400
+        
+        # Validasi website format
+        if 'website' in data and data['website']:
+            if not data['website'].startswith(('http://', 'https://')):
+                data['website'] = 'https://' + data['website']
+        
+        # Validasi category_id (tags) jika ada
+        if 'category_id' in data and data['category_id']:
+            if not isinstance(data['category_id'], list):
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'category_id must be a list of tag IDs'
+                }), 400
+            
+            # Cek apakah semua tag ID valid
+            for tag_id in data['category_id']:
+                if not isinstance(tag_id, int):
+                    return ordered_jsonify({
+                        'success': False,
+                        'error': 'All tag IDs must be integers'
+                    }), 400
+                
+                tag_exists = models.execute_kw(
+                    ODOO_DB, uid, ODOO_API_KEY,
+                    'res.partner.category',
+                    'search',
+                    [[['id', '=', tag_id]]]
+                )
+                if not tag_exists:
+                    return ordered_jsonify({
+                        'success': False,
+                        'error': f'Tag with ID {tag_id} not found'
+                    }), 400
         
         # Validasi state_id jika ada dan ambil country_id dari state
         country_id_from_state = None
@@ -244,9 +317,21 @@ def create_contact():
             'name': data['name'],
             'email': data.get('email', False),
             'phone': data.get('phone', False),
+            'mobile': data.get('mobile', False),
+            'website': data.get('website', False),
+            'function': data.get('function', False),
+            'title': data.get('title', False),
+            'lang': data.get('lang', False),
             'x_studio_your_business': data.get('x_studio_your_business', False),
+            'x_studio_id': data.get('x_studio_id', False),
+            'vat': data.get('vat', False),
+            'street': data.get('street', False),
+            'street2': data.get('street2', False),
+            'city': data.get('city', False),
+            'zip': data.get('zip', False),
             'country_id': final_country_id,
-            'state_id': data.get('state_id', False)
+            'state_id': data.get('state_id', False),
+            'category_id': [(6, 0, data.get('category_id', []))] if data.get('category_id') else False
         }
         
         # Buat contact baru di Odoo
@@ -263,7 +348,11 @@ def create_contact():
             'res.partner',
             'read',
             [new_contact_id],
-            {'fields': ['id', 'name', 'email', 'phone', 'x_studio_your_business', 'country_id', 'state_id']}
+            {'fields': [
+                'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
+                'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
+                'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
+            ]}
         )
         
         # Tambahkan informasi country dan state yang lebih detail
@@ -293,6 +382,23 @@ def create_contact():
             # Jika sudah integer, biarkan saja
         else:
             contact['state_id'] = None
+            
+        # Proses category_id (tags) - ambil nama tag jika ada
+        if contact.get('category_id') and contact['category_id'] != False:
+            if isinstance(contact['category_id'], list):
+                contact['tags'] = [tag[1] for tag in contact['category_id']]  # Ambil nama tag
+                contact['tag_ids'] = [tag[0] for tag in contact['category_id']]  # Ambil ID tag
+            else:
+                contact['tags'] = [contact['category_id']]
+                contact['tag_ids'] = [contact['category_id']]
+        else:
+            contact['tags'] = []
+            contact['tag_ids'] = []
+            
+        # Proses field yang mungkin False menjadi None untuk konsistensi
+        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+            if contact.get(field) == False:
+                contact[field] = None
         
         # Siapkan response message
         message = 'Contact created successfully'
@@ -312,6 +418,40 @@ def create_contact():
             'details': str(e)
         }), 500
 
+@contact_bp.route('/tags', methods=['GET'])
+@handle_odoo_errors
+def get_all_tags():
+    """Get all available tags/categories for contact"""
+    # Ambil semua ID tag
+    tag_ids = models.execute_kw(
+        ODOO_DB, uid, ODOO_API_KEY, 
+        'res.partner.category', 
+        'search', 
+        [[]]  # Domain kosong = semua records
+    )
+    
+    if not tag_ids:
+        return ordered_jsonify({
+            'success': True,
+            'data': [],
+            'count': 0
+        })
+    
+    # Ambil data tag dengan field yang diperlukan
+    tags = models.execute_kw(
+        ODOO_DB, uid, ODOO_API_KEY,
+        'res.partner.category',
+        'read',
+        [tag_ids],
+        {'fields': ['id', 'name', 'color']}
+    )
+    
+    return ordered_jsonify({
+        'success': True,
+        'data': tags,
+        'count': len(tags)
+    })
+
 @contact_bp.route('/contacts/<int:contact_id>', methods=['GET'])
 @handle_odoo_errors
 def get_contact_by_id(contact_id):
@@ -322,7 +462,11 @@ def get_contact_by_id(contact_id):
         'res.partner',
         'read',
         [contact_id],
-        {'fields': ['id', 'name', 'email', 'phone', 'x_studio_your_business', 'country_id', 'state_id']}
+        {'fields': [
+            'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
+            'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
+            'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
+        ]}
     )
     
     if not contacts:
@@ -358,11 +502,274 @@ def get_contact_by_id(contact_id):
         # Jika sudah integer, biarkan saja
     else:
         contact['state_id'] = None
+        
+    # Proses category_id (tags) - ambil nama tag jika ada
+    if contact.get('category_id') and contact['category_id'] != False:
+        if isinstance(contact['category_id'], list):
+            contact['tags'] = [tag[1] for tag in contact['category_id']]  # Ambil nama tag
+            contact['tag_ids'] = [tag[0] for tag in contact['category_id']]  # Ambil ID tag
+        else:
+            contact['tags'] = [contact['category_id']]
+            contact['tag_ids'] = [contact['category_id']]
+    else:
+        contact['tags'] = []
+        contact['tag_ids'] = []
+        
+    # Proses field yang mungkin False menjadi None untuk konsistensi
+    for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+        if contact.get(field) == False:
+            contact[field] = None
     
     return ordered_jsonify({
         'success': True,
         'data': contact
     })
+
+@contact_bp.route('/contacts/<int:contact_id>', methods=['PUT'])
+@handle_odoo_errors
+def update_contact(contact_id):
+    """Update an existing contact"""
+    try:
+        # Ambil data dari request body
+        data = request.get_json()
+        
+        if not data:
+            return ordered_jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        
+        # Cek apakah contact ada
+        contact_exists = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'res.partner',
+            'search',
+            [[['id', '=', contact_id]]]
+        )
+        
+        if not contact_exists:
+            return ordered_jsonify({
+                'success': False,
+                'error': 'Contact not found'
+            }), 404
+        
+        # Validasi business type jika ada
+        valid_business_types = ["I am a business", "I am a freight forwarder"]
+        if 'x_studio_your_business' in data and data['x_studio_your_business'] not in valid_business_types:
+            return ordered_jsonify({
+                'success': False,
+                'error': f'x_studio_your_business must be one of: {valid_business_types}'
+            }), 400
+        
+        # Validasi NPWP (vat) - format Indonesia
+        if 'vat' in data and data['vat']:
+            vat = data['vat'].replace('.', '').replace('-', '').replace(' ', '')
+            if not vat.isdigit() or len(vat) != 15:
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'NPWP must be 15 digits (format: XX.XXX.XXX.X-XXX.XXX)'
+                }), 400
+        
+        # Validasi email format
+        if 'email' in data and data['email']:
+            import re
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            if not re.match(email_pattern, data['email']):
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'Invalid email format'
+                }), 400
+        
+        # Validasi website format
+        if 'website' in data and data['website']:
+            if not data['website'].startswith(('http://', 'https://')):
+                data['website'] = 'https://' + data['website']
+        
+        # Validasi category_id (tags) jika ada
+        if 'category_id' in data and data['category_id']:
+            if not isinstance(data['category_id'], list):
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'category_id must be a list of tag IDs'
+                }), 400
+            
+            # Cek apakah semua tag ID valid
+            for tag_id in data['category_id']:
+                if not isinstance(tag_id, int):
+                    return ordered_jsonify({
+                        'success': False,
+                        'error': 'All tag IDs must be integers'
+                    }), 400
+                
+                tag_exists = models.execute_kw(
+                    ODOO_DB, uid, ODOO_API_KEY,
+                    'res.partner.category',
+                    'search',
+                    [[['id', '=', tag_id]]]
+                )
+                if not tag_exists:
+                    return ordered_jsonify({
+                        'success': False,
+                        'error': f'Tag with ID {tag_id} not found'
+                    }), 400
+        
+        # Validasi state_id jika ada
+        if 'state_id' in data and data['state_id']:
+            state_exists = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                'res.country.state',
+                'search',
+                [[['id', '=', data['state_id']]]]
+            )
+            if not state_exists:
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'Invalid state_id'
+                }), 400
+        
+        # Validasi country_id jika ada
+        if 'country_id' in data and data['country_id']:
+            country_exists = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                'res.country',
+                'search',
+                [[['id', '=', data['country_id']]]]
+            )
+            if not country_exists:
+                return ordered_jsonify({
+                    'success': False,
+                    'error': 'Invalid country_id'
+                }), 400
+        
+        # Siapkan data untuk update
+        update_data = {}
+        for field in ['name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
+                     'x_studio_your_business', 'x_studio_id', 'vat', 'street', 'street2', 
+                     'city', 'zip', 'country_id', 'state_id']:
+            if field in data:
+                update_data[field] = data[field]
+        
+        # Handle category_id khusus
+        if 'category_id' in data:
+            if data['category_id']:
+                update_data['category_id'] = [(6, 0, data['category_id'])]
+            else:
+                update_data['category_id'] = [(5, 0, 0)]  # Remove all tags
+        
+        # Update contact di Odoo
+        models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'res.partner',
+            'write',
+            [contact_id, update_data]
+        )
+        
+        # Ambil data contact yang sudah diupdate
+        updated_contact = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'res.partner',
+            'read',
+            [contact_id],
+            {'fields': [
+                'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
+                'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
+                'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
+            ]}
+        )
+        
+        # Proses data contact yang sudah diupdate
+        contact = updated_contact[0]
+        if contact.get('country_id') and contact['country_id'] != False:
+            contact['country_name'] = contact['country_id'][1] if isinstance(contact['country_id'], list) else contact['country_id']
+        else:
+            contact['country_name'] = None
+            
+        if contact.get('state_id') and contact['state_id'] != False:
+            contact['state_name'] = contact['state_id'][1] if isinstance(contact['state_id'], list) else contact['state_id']
+        else:
+            contact['state_name'] = None
+            
+        # Ubah country_id dan state_id menjadi integer saja
+        if contact.get('country_id') and contact['country_id'] != False:
+            if isinstance(contact['country_id'], list):
+                contact['country_id'] = contact['country_id'][0]
+        else:
+            contact['country_id'] = None
+            
+        if contact.get('state_id') and contact['state_id'] != False:
+            if isinstance(contact['state_id'], list):
+                contact['state_id'] = contact['state_id'][0]
+        else:
+            contact['state_id'] = None
+            
+        # Proses category_id (tags)
+        if contact.get('category_id') and contact['category_id'] != False:
+            if isinstance(contact['category_id'], list):
+                contact['tags'] = [tag[1] for tag in contact['category_id']]
+                contact['tag_ids'] = [tag[0] for tag in contact['category_id']]
+            else:
+                contact['tags'] = [contact['category_id']]
+                contact['tag_ids'] = [contact['category_id']]
+        else:
+            contact['tags'] = []
+            contact['tag_ids'] = []
+            
+        # Proses field yang mungkin False menjadi None
+        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+            if contact.get(field) == False:
+                contact[field] = None
+        
+        return ordered_jsonify({
+            'success': True,
+            'data': contact,
+            'message': 'Contact updated successfully'
+        })
+        
+    except Exception as e:
+        return ordered_jsonify({
+            'success': False,
+            'error': 'Failed to update contact',
+            'details': str(e)
+        }), 500
+
+@contact_bp.route('/contacts/<int:contact_id>', methods=['DELETE'])
+@handle_odoo_errors
+def delete_contact(contact_id):
+    """Delete a contact"""
+    try:
+        # Cek apakah contact ada
+        contact_exists = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'res.partner',
+            'search',
+            [[['id', '=', contact_id]]]
+        )
+        
+        if not contact_exists:
+            return ordered_jsonify({
+                'success': False,
+                'error': 'Contact not found'
+            }), 404
+        
+        # Hapus contact dari Odoo
+        models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'res.partner',
+            'unlink',
+            [contact_id]
+        )
+        
+        return ordered_jsonify({
+            'success': True,
+            'message': f'Contact with ID {contact_id} deleted successfully'
+        })
+        
+    except Exception as e:
+        return ordered_jsonify({
+            'success': False,
+            'error': 'Failed to delete contact',
+            'details': str(e)
+        }), 500
 
 
 

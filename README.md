@@ -122,6 +122,8 @@ Field dalam response JSON akan selalu ditampilkan dalam urutan yang konsisten se
 6. `street`
 7. `city`
 8. `country_id`
+9. `vat`
+
 
 Untuk error:
 ```json
