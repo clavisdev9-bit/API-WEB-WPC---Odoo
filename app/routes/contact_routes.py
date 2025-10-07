@@ -24,6 +24,237 @@ def handle_odoo_errors(f):
             }), 500
     return decorated_function
 
+def process_category_id(category_id):
+    """Helper function to safely process category_id (many2many field) and extract tags"""
+    if not category_id or category_id == False:
+        return []
+    
+    # Debug: Print the raw category_id data
+    print(f"DEBUG: Raw category_id data: {category_id}, type: {type(category_id)}")
+    
+    if isinstance(category_id, list):
+        # Untuk many2many field, Odoo mengembalikan list of tuples (id, name)
+        if category_id and isinstance(category_id[0], (list, tuple)) and len(category_id[0]) >= 2:
+            # Return array of objects dengan id dan name
+            tags = []
+            for tag in category_id:
+                tag_id = tag[0]
+                tag_name = tag[1] if len(tag) > 1 else None
+                # Jika name kosong atau None, coba ambil dari database
+                if not tag_name:
+                    try:
+                        # Ambil nama tag dari database
+                        tag_data = models.execute_kw(
+                            ODOO_DB, uid, ODOO_API_KEY,
+                            'res.partner.category',
+                            'read',
+                            [tag_id],
+                            {'fields': ['name']}
+                        )
+                        print(f"DEBUG: Tag data from DB for ID {tag_id}: {tag_data}")
+                        if tag_data and tag_data[0].get('name'):
+                            tag_name = tag_data[0]['name']
+                    except Exception as e:
+                        print(f"DEBUG: Error getting tag name for ID {tag_id}: {e}")
+                        tag_name = f"Tag {tag_id}"  # Fallback name
+                
+                tags.append({
+                    "id": tag_id,
+                    "name": tag_name
+                })
+        else:
+            # Jika format tidak sesuai (list of integers), ambil nama dari database
+            tags = []
+            for tag_id in category_id:
+                tag_name = None
+                try:
+                    # Ambil nama tag dari database
+                    tag_data = models.execute_kw(
+                        ODOO_DB, uid, ODOO_API_KEY,
+                        'res.partner.category',
+                        'read',
+                        [tag_id],
+                        {'fields': ['name']}
+                    )
+                    print(f"DEBUG: Tag data from DB for ID {tag_id}: {tag_data}")
+                    if tag_data and tag_data[0].get('name'):
+                        tag_name = tag_data[0]['name']
+                except Exception as e:
+                    print(f"DEBUG: Error getting tag name for ID {tag_id}: {e}")
+                    tag_name = f"Tag {tag_id}"  # Fallback name
+                
+                tags.append({
+                    "id": tag_id,
+                    "name": tag_name
+                })
+    else:
+        # Jika single value, ambil nama dari database
+        tag_name = None
+        try:
+            tag_data = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                'res.partner.category',
+                'read',
+                [category_id],
+                {'fields': ['name']}
+            )
+            print(f"DEBUG: Tag data from DB for ID {category_id}: {tag_data}")
+            if tag_data and tag_data[0].get('name'):
+                tag_name = tag_data[0]['name']
+        except Exception as e:
+            print(f"DEBUG: Error getting tag name for ID {category_id}: {e}")
+            tag_name = f"Tag {category_id}"  # Fallback name
+        
+        tags = [{"id": category_id, "name": tag_name}]
+    
+    return tags
+
+def process_country_state(country_id, country_name, state_id, state_name):
+    """Process country and state fields into structured format"""
+    country_data = []
+    state_data = []
+    
+    # Process country
+    if country_id and country_id != False:
+        country_data.append({
+            "country_id": country_id,
+            "country_name": country_name if country_name else None
+        })
+    
+    # Process state
+    if state_id and state_id != False:
+        state_data.append({
+            "state_id": state_id,
+            "state_name": state_name if state_name else None
+        })
+    
+    return country_data, state_data
+
+def convert_odoo_to_label_fields(contact_data):
+    """Convert Odoo field names to label names in response with proper field order"""
+    field_mapping = {
+        'x_studio_id': 'custom_id',
+        'street': 'street',
+        'street2': 'street2',
+        'city': 'city',
+        'state_id': 'state',
+        'zip': 'zip',
+        'country_id': 'country',
+        'vat': 'npwp',
+        'x_studio_your_business': 'your_business',
+        'function': 'job_position',
+        'phone': 'phone',
+        'mobile': 'mobile',
+        'email': 'email',
+        'website': 'website',
+        'title': 'title',
+        'lang': 'language',
+        'category_id': 'tags',
+        'company_type': 'company_type'
+    }
+    
+    # Define field order based on Odoo Studio layout
+    field_order = [
+        'name',         # Contact name
+        'custom_id',    # Custom ID
+        'street',       # Address fields
+        'street2',
+        'city',
+        'country',      # Country with new structure
+        'state',        # State with new structure
+        'zip',
+        'npwp',         # Business fields
+        'your_business',
+        'job_position', # Contact details
+        'phone',
+        'mobile',
+        'email',
+        'website',
+        'title',
+        'language',
+        'company_type',
+        'tags',         # Tags
+    ]
+    
+    # Create ordered dictionary with label names
+    converted_data = {}
+    
+    # First, convert all fields
+    for odoo_field, label_name in field_mapping.items():
+        if odoo_field in contact_data:
+            converted_data[label_name] = contact_data[odoo_field]
+    
+    # Handle special fields
+    # if 'id' in contact_data:
+    #     converted_data['id'] = contact_data['id']
+    if 'name' in contact_data:
+        converted_data['name'] = contact_data['name']
+    
+    # Process country and state with new structure
+    country_data, state_data = process_country_state(
+        contact_data.get('country_id'),
+        contact_data.get('country_name'),
+        contact_data.get('state_id'),
+        contact_data.get('state_name')
+    )
+    converted_data['country'] = country_data
+    converted_data['state'] = state_data
+    
+    # Keep other fields that don't have mapping
+    for key, value in contact_data.items():
+        if key not in field_mapping and key not in ['id', 'name', 'country_id', 'state_id', 'country_name', 'state_name']:
+            converted_data[key] = value
+    
+    # Return ordered dictionary based on field_order
+    ordered_data = {}
+    for field in field_order:
+        if field in converted_data:
+            ordered_data[field] = converted_data[field]
+    
+    # Add any remaining fields that weren't in the order list
+    for key, value in converted_data.items():
+        if key not in ordered_data:
+            ordered_data[key] = value
+    
+    return ordered_data
+
+def convert_label_to_odoo_fields(data):
+    """Convert label field names to Odoo field names for input processing"""
+    label_to_odoo_mapping = {
+        'name': 'name',
+        'custom_id': 'x_studio_id',
+        'street': 'street',
+        'street2': 'street2',
+        'city': 'city',
+        'state': 'state_id',
+        'zip': 'zip',
+        'country': 'country_id',
+        'npwp': 'vat',
+        'your_business': 'x_studio_your_business',
+        'job_position': 'function',
+        'phone': 'phone',
+        'mobile': 'mobile',
+        'email': 'email',
+        'website': 'website',
+        'title': 'title',
+        'language': 'lang',
+        'tags': 'category_id',
+        'company_type': 'company_type'
+    }
+    
+    # Convert label names to Odoo field names
+    converted_data = {}
+    for label_name, odoo_field in label_to_odoo_mapping.items():
+        if label_name in data:
+            converted_data[odoo_field] = data[label_name]
+    
+    # Keep other fields that don't have mapping
+    for key, value in data.items():
+        if key not in label_to_odoo_mapping:
+            converted_data[key] = value
+    
+    return converted_data
+
 @contact_bp.route('/states', methods=['GET'])
 @handle_odoo_errors
 def get_all_states():
@@ -133,7 +364,7 @@ def get_all_contacts():
         'read',
         [contact_ids],
         {'fields': [
-            'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
+            'company_type','id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
             'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
             'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
         ]}
@@ -170,26 +401,26 @@ def get_all_contacts():
             contact['state_id'] = None
             
         # Proses category_id (tags) - ambil nama tag jika ada
-        if contact.get('category_id') and contact['category_id'] != False:
-            if isinstance(contact['category_id'], list):
-                contact['tags'] = [tag[1] for tag in contact['category_id']]  # Ambil nama tag
-                contact['tag_ids'] = [tag[0] for tag in contact['category_id']]  # Ambil ID tag
-            else:
-                contact['tags'] = [contact['category_id']]
-                contact['tag_ids'] = [contact['category_id']]
-        else:
-            contact['tags'] = []
-            contact['tag_ids'] = []
+        contact['tags'] = process_category_id(contact.get('category_id'))
+        # Hapus field category_id yang tidak diperlukan di response
+        if 'category_id' in contact:
+            del contact['category_id']
             
         # Proses field yang mungkin False menjadi None untuk konsistensi
-        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id', 'company_type']:
             if contact.get(field) == False:
                 contact[field] = None
     
+    # Convert field names to label names
+    converted_contacts = []
+    for contact in contacts:
+        converted_contact = convert_odoo_to_label_fields(contact)
+        converted_contacts.append(converted_contact)
+    
     return ordered_jsonify({
         'success': True,
-        'data': contacts,
-        'count': len(contacts)
+        'data': converted_contacts,
+        'count': len(converted_contacts)
     })
 
 @contact_bp.route('/contacts/create', methods=['POST'])
@@ -206,6 +437,9 @@ def create_contact():
                 'error': 'No data provided'
             }), 400
         
+        # Convert label field names to Odoo field names
+        data = convert_label_to_odoo_fields(data)
+        
         # Validasi field wajib
         required_fields = ['name']
         for field in required_fields:
@@ -221,6 +455,14 @@ def create_contact():
             return ordered_jsonify({
                 'success': False,
                 'error': f'x_studio_your_business must be one of: {valid_business_types}'
+            }), 400
+        
+        # Validasi company type
+        valid_company_types = ["person", "company"]
+        if 'company_type' in data and data['company_type'] not in valid_company_types:
+            return ordered_jsonify({
+                'success': False,
+                'error': f'company_type must be one of: {valid_company_types}'
             }), 400
         
         # Validasi NPWP (vat) - format Indonesia
@@ -247,7 +489,7 @@ def create_contact():
             if not data['website'].startswith(('http://', 'https://')):
                 data['website'] = 'https://' + data['website']
         
-        # Validasi category_id (tags) jika ada
+        # Validasi category_id (tags) jika ada - many2many field
         if 'category_id' in data and data['category_id']:
             if not isinstance(data['category_id'], list):
                 return ordered_jsonify({
@@ -263,6 +505,7 @@ def create_contact():
                         'error': 'All tag IDs must be integers'
                     }), 400
                 
+                # Validasi tag ID ada di database
                 tag_exists = models.execute_kw(
                     ODOO_DB, uid, ODOO_API_KEY,
                     'res.partner.category',
@@ -325,6 +568,7 @@ def create_contact():
             'x_studio_your_business': data.get('x_studio_your_business', False),
             'x_studio_id': data.get('x_studio_id', False),
             'vat': data.get('vat', False),
+            'company_type': data.get('company_type', False),
             'street': data.get('street', False),
             'street2': data.get('street2', False),
             'city': data.get('city', False),
@@ -384,30 +628,27 @@ def create_contact():
             contact['state_id'] = None
             
         # Proses category_id (tags) - ambil nama tag jika ada
-        if contact.get('category_id') and contact['category_id'] != False:
-            if isinstance(contact['category_id'], list):
-                contact['tags'] = [tag[1] for tag in contact['category_id']]  # Ambil nama tag
-                contact['tag_ids'] = [tag[0] for tag in contact['category_id']]  # Ambil ID tag
-            else:
-                contact['tags'] = [contact['category_id']]
-                contact['tag_ids'] = [contact['category_id']]
-        else:
-            contact['tags'] = []
-            contact['tag_ids'] = []
+        contact['tags'] = process_category_id(contact.get('category_id'))
+        # Hapus field category_id yang tidak diperlukan di response
+        if 'category_id' in contact:
+            del contact['category_id']
             
         # Proses field yang mungkin False menjadi None untuk konsistensi
-        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id', 'company_type']:
             if contact.get(field) == False:
                 contact[field] = None
+        
+        # Convert field names to label names
+        converted_contact = convert_odoo_to_label_fields(contact)
         
         # Siapkan response message
         message = 'Contact created successfully'
         if country_id_from_state and not data.get('country_id'):
-            message += f'. Country automatically set to {contact["country_name"]} based on selected state'
+            message += f'. Country automatically set to {converted_contact["country_name"]} based on selected state'
         
         return ordered_jsonify({
             'success': True,
-            'data': new_contact[0],
+            'data': converted_contact,
             'message': message
         }), 201
         
@@ -464,7 +705,7 @@ def get_contact_by_id(contact_id):
         [contact_id],
         {'fields': [
             'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
-            'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
+            'x_studio_your_business', 'x_studio_id', 'vat', 'category_id', 'company_type',
             'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
         ]}
     )
@@ -504,25 +745,22 @@ def get_contact_by_id(contact_id):
         contact['state_id'] = None
         
     # Proses category_id (tags) - ambil nama tag jika ada
-    if contact.get('category_id') and contact['category_id'] != False:
-        if isinstance(contact['category_id'], list):
-            contact['tags'] = [tag[1] for tag in contact['category_id']]  # Ambil nama tag
-            contact['tag_ids'] = [tag[0] for tag in contact['category_id']]  # Ambil ID tag
-        else:
-            contact['tags'] = [contact['category_id']]
-            contact['tag_ids'] = [contact['category_id']]
-    else:
-        contact['tags'] = []
-        contact['tag_ids'] = []
+    contact['tags'] = process_category_id(contact.get('category_id'))
+    # Hapus field category_id yang tidak diperlukan di response
+    if 'category_id' in contact:
+        del contact['category_id']
         
     # Proses field yang mungkin False menjadi None untuk konsistensi
-    for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+    for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id', 'company_type']:
         if contact.get(field) == False:
             contact[field] = None
     
+    # Convert field names to label names
+    converted_contact = convert_odoo_to_label_fields(contact)
+    
     return ordered_jsonify({
         'success': True,
-        'data': contact
+        'data': converted_contact
     })
 
 @contact_bp.route('/contacts/<int:contact_id>', methods=['PUT'])
@@ -538,6 +776,9 @@ def update_contact(contact_id):
                 'success': False,
                 'error': 'No data provided'
             }), 400
+        
+        # Convert label field names to Odoo field names
+        data = convert_label_to_odoo_fields(data)
         
         # Cek apakah contact ada
         contact_exists = models.execute_kw(
@@ -559,6 +800,14 @@ def update_contact(contact_id):
             return ordered_jsonify({
                 'success': False,
                 'error': f'x_studio_your_business must be one of: {valid_business_types}'
+            }), 400
+        
+        # Validasi company type jika ada
+        valid_company_types = ["person", "company"]
+        if 'company_type' in data and data['company_type'] not in valid_company_types:
+            return ordered_jsonify({
+                'success': False,
+                'error': f'company_type must be one of: {valid_company_types}'
             }), 400
         
         # Validasi NPWP (vat) - format Indonesia
@@ -585,7 +834,7 @@ def update_contact(contact_id):
             if not data['website'].startswith(('http://', 'https://')):
                 data['website'] = 'https://' + data['website']
         
-        # Validasi category_id (tags) jika ada
+        # Validasi category_id (tags) jika ada - many2many field
         if 'category_id' in data and data['category_id']:
             if not isinstance(data['category_id'], list):
                 return ordered_jsonify({
@@ -601,6 +850,7 @@ def update_contact(contact_id):
                         'error': 'All tag IDs must be integers'
                     }), 400
                 
+                # Validasi tag ID ada di database
                 tag_exists = models.execute_kw(
                     ODOO_DB, uid, ODOO_API_KEY,
                     'res.partner.category',
@@ -644,7 +894,7 @@ def update_contact(contact_id):
         # Siapkan data untuk update
         update_data = {}
         for field in ['name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
-                     'x_studio_your_business', 'x_studio_id', 'vat', 'street', 'street2', 
+                     'x_studio_your_business', 'x_studio_id', 'vat', 'company_type', 'street', 'street2', 
                      'city', 'zip', 'country_id', 'state_id']:
             if field in data:
                 update_data[field] = data[field]
@@ -672,7 +922,7 @@ def update_contact(contact_id):
             [contact_id],
             {'fields': [
                 'id', 'name', 'email', 'phone', 'mobile', 'website', 'function', 'title', 'lang',
-                'x_studio_your_business', 'x_studio_id', 'vat', 'category_id',
+                'x_studio_your_business', 'x_studio_id', 'vat', 'category_id', 'company_type',
                 'street', 'street2', 'city', 'zip', 'country_id', 'state_id'
             ]}
         )
@@ -703,25 +953,22 @@ def update_contact(contact_id):
             contact['state_id'] = None
             
         # Proses category_id (tags)
-        if contact.get('category_id') and contact['category_id'] != False:
-            if isinstance(contact['category_id'], list):
-                contact['tags'] = [tag[1] for tag in contact['category_id']]
-                contact['tag_ids'] = [tag[0] for tag in contact['category_id']]
-            else:
-                contact['tags'] = [contact['category_id']]
-                contact['tag_ids'] = [contact['category_id']]
-        else:
-            contact['tags'] = []
-            contact['tag_ids'] = []
+        contact['tags'] = process_category_id(contact.get('category_id'))
+        # Hapus field category_id yang tidak diperlukan di response
+        if 'category_id' in contact:
+            del contact['category_id']
             
         # Proses field yang mungkin False menjadi None
-        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id']:
+        for field in ['street', 'street2', 'city', 'zip', 'vat', 'function', 'title', 'lang', 'mobile', 'website', 'x_studio_id', 'company_type']:
             if contact.get(field) == False:
                 contact[field] = None
         
+        # Convert field names to label names
+        converted_contact = convert_odoo_to_label_fields(contact)
+        
         return ordered_jsonify({
             'success': True,
-            'data': contact,
+            'data': converted_contact,
             'message': 'Contact updated successfully'
         })
         
