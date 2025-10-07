@@ -133,7 +133,7 @@ def process_country_state(country_id, country_name, state_id, state_name):
 def convert_odoo_to_label_fields(contact_data):
     """Convert Odoo field names to label names in response with proper field order"""
     field_mapping = {
-        'x_studio_id': 'custom_id',
+        'x_studio_id': 'contact_id',
         'street': 'street',
         'street2': 'street2',
         'city': 'city',
@@ -156,7 +156,7 @@ def convert_odoo_to_label_fields(contact_data):
     # Define field order based on Odoo Studio layout
     field_order = [
         'name',         # Contact name
-        'custom_id',    # Custom ID
+        'contact_id',    # Contact ID
         'street',       # Address fields
         'street2',
         'city',
@@ -222,7 +222,7 @@ def convert_label_to_odoo_fields(data):
     """Convert label field names to Odoo field names for input processing"""
     label_to_odoo_mapping = {
         'name': 'name',
-        'custom_id': 'x_studio_id',
+        'contact_id': 'x_studio_id',
         'street': 'street',
         'street2': 'street2',
         'city': 'city',
