@@ -10,7 +10,7 @@ Berikut adalah mapping field antara API Response dan Odoo Studio:
 |-------------------|-------------------|-----------|
 | id | id | ID database Odoo (auto-increment) |
 | name | name | Nama kontak |
-| custom_id | x_studio_id | ID custom kontak |
+| contact_id | x_studio_id | ID custom kontak |
 | street | street | Alamat jalan |
 | street2 | street2 | Alamat jalan tambahan |
 | city | city | Kota |
@@ -42,7 +42,7 @@ Mengambil semua data kontak dengan field lengkap.
     {
       "id": 1,
       "name": "John Doe",
-      "custom_id": "CUST001",
+      "contact_id": "CUST001",
       "street": "Jl. Contoh No. 123",
       "street2": "RT 01/RW 02",
       "city": "Jakarta",
@@ -132,7 +132,7 @@ Membuat kontak baru.
   "language": "en_US",
   "company_type": "person",
   "your_business": "I am a business",
-  "custom_id": "CUST001",
+  "contact_id": "CUST001",
   "npwp": "12.345.678.9-012.000",
   "street": "Jl. Contoh No. 123",
   "street2": "RT 01/RW 02",

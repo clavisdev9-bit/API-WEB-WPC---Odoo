@@ -155,8 +155,9 @@ def convert_odoo_to_label_fields(contact_data):
     
     # Define field order based on Odoo Studio layout
     field_order = [
+        'id',           # Database ID (always first)
         'name',         # Contact name
-        'contact_id',    # Contact ID
+        'contact_id',   # Contact ID
         'street',       # Address fields
         'street2',
         'city',
@@ -185,8 +186,8 @@ def convert_odoo_to_label_fields(contact_data):
             converted_data[label_name] = contact_data[odoo_field]
     
     # Handle special fields
-    # if 'id' in contact_data:
-    #     converted_data['id'] = contact_data['id']
+    if 'id' in contact_data:
+        converted_data['id'] = contact_data['id']
     if 'name' in contact_data:
         converted_data['name'] = contact_data['name']
     
