@@ -4,27 +4,30 @@
 API Contact menyediakan endpoint untuk mengelola data kontak dengan field lengkap sesuai dengan mapping Odoo Studio.
 
 ## Field Mapping
-Berikut adalah mapping field antara API dan Odoo Studio:
+Berikut adalah mapping field antara API Response dan Odoo Studio:
 
-| Field API | Field Odoo Studio | Deskripsi |
-|-----------|-------------------|-----------|
-| id | x_studio_id | ID unik kontak |
+| Field API Response | Field Odoo Studio | Deskripsi |
+|-------------------|-------------------|-----------|
+| id | id | ID database Odoo (auto-increment) |
+| name | name | Nama kontak |
+| custom_id | x_studio_id | ID custom kontak |
 | street | street | Alamat jalan |
 | street2 | street2 | Alamat jalan tambahan |
 | city | city | Kota |
-| state_id | state_id | ID provinsi/state |
+| state | state_id | Array objek state dengan id dan name |
 | zip | zip | Kode pos |
-| country_id | country_id | ID negara |
-| vat | vat | NPWP |
-| x_studio_your_business | x_studio_your_business | Tipe bisnis |
-| function | function | Posisi/jabatan |
+| country | country_id | Array objek country dengan id dan name |
+| npwp | vat | NPWP |
+| your_business | x_studio_your_business | Tipe bisnis |
+| job_position | function | Posisi/jabatan |
 | phone | phone | Nomor telepon |
 | mobile | mobile | Nomor handphone |
 | email | email | Alamat email |
 | website | website | Website |
 | title | title | Gelar |
-| lang | lang | Bahasa |
-| category_id | category_id | Tags/kategori |
+| language | lang | Bahasa |
+| company_type | company_type | Tipe perusahaan (person/company) |
+| tags | category_id | Tags/kategori (many2many) |
 
 ## Endpoints
 
@@ -39,26 +42,37 @@ Mengambil semua data kontak dengan field lengkap.
     {
       "id": 1,
       "name": "John Doe",
-      "email": "john@example.com",
-      "phone": "+628123456789",
-      "mobile": "+628123456789",
-      "website": "https://example.com",
-      "function": "Manager",
-      "title": "Mr.",
-      "lang": "en_US",
-      "x_studio_your_business": "I am a business",
-      "x_studio_id": "CUST001",
-      "vat": "12.345.678.9-012.000",
+      "custom_id": "CUST001",
       "street": "Jl. Contoh No. 123",
       "street2": "RT 01/RW 02",
       "city": "Jakarta",
+      "country": [
+        {
+          "country_id": 105,
+          "country_name": "Indonesia"
+        }
+      ],
+      "state": [
+        {
+          "state_id": 1,
+          "state_name": "DKI Jakarta"
+        }
+      ],
       "zip": "12345",
-      "country_id": 105,
-      "country_name": "Indonesia",
-      "state_id": 1,
-      "state_name": "DKI Jakarta",
-      "tags": ["VIP", "Customer"],
-      "tag_ids": [1, 2]
+      "npwp": "12.345.678.9-012.000",
+      "your_business": "I am a business",
+      "job_position": "Manager",
+      "phone": "+628123456789",
+      "mobile": "+628123456789",
+      "email": "john@example.com",
+      "website": "https://example.com",
+      "title": "Mr.",
+      "language": "en_US",
+      "company_type": "person",
+      "tags": [
+        {"id": 1, "name": "VIP"},
+        {"id": 2, "name": "Customer"}
+      ]
     }
   ],
   "count": 1
@@ -74,27 +88,30 @@ Mengambil data kontak berdasarkan ID.
   "success": true,
   "data": {
     "id": 1,
-    "name": "John Doe",
-    "email": "john@example.com",
-    "phone": "+628123456789",
-    "mobile": "+628123456789",
-    "website": "https://example.com",
-    "function": "Manager",
-    "title": "Mr.",
-    "lang": "en_US",
-    "x_studio_your_business": "I am a business",
-    "x_studio_id": "CUST001",
-    "vat": "12.345.678.9-012.000",
-    "street": "Jl. Contoh No. 123",
-    "street2": "RT 01/RW 02",
-    "city": "Jakarta",
-    "zip": "12345",
-    "country_id": 105,
+    "Name": "John Doe",
+    "ID": "CUST001",
+    "Street": "Jl. Contoh No. 123",
+    "Street2": "RT 01/RW 02",
+    "City": "Jakarta",
+    "Country": 105,
+    "State": 1,
+    "Zip": "12345",
+    "NPWP": "12.345.678.9-012.000",
+    "Your Business": "I am a business",
+    "Job Position": "Manager",
+    "Phone": "+628123456789",
+    "Mobile": "+628123456789",
+    "Email": "john@example.com",
+    "Website": "https://example.com",
+    "Title": "Mr.",
+    "Language": "en_US",
+    "Company Type": "person",
+    "Tags": [
+      {"id": 1, "name": "VIP"},
+      {"id": 2, "name": "Customer"}
+    ],
     "country_name": "Indonesia",
-    "state_id": 1,
-    "state_name": "DKI Jakarta",
-    "tags": ["VIP", "Customer"],
-    "tag_ids": [1, 2]
+    "state_name": "DKI Jakarta"
   }
 }
 ```
@@ -110,19 +127,20 @@ Membuat kontak baru.
   "phone": "+628123456789",
   "mobile": "+628123456789",
   "website": "example.com",
-  "function": "Manager",
+  "job_position": "Manager",
   "title": "Mr.",
-  "lang": "en_US",
-  "x_studio_your_business": "I am a business",
-  "x_studio_id": "CUST001",
-  "vat": "12.345.678.9-012.000",
+  "language": "en_US",
+  "company_type": "person",
+  "your_business": "I am a business",
+  "custom_id": "CUST001",
+  "npwp": "12.345.678.9-012.000",
   "street": "Jl. Contoh No. 123",
   "street2": "RT 01/RW 02",
   "city": "Jakarta",
   "zip": "12345",
-  "country_id": 105,
-  "state_id": 1,
-  "category_id": [1, 2]
+  "country": [105],
+  "state": [1],
+  "tags": [1, 2]
 }
 ```
 
@@ -132,27 +150,30 @@ Membuat kontak baru.
   "success": true,
   "data": {
     "id": 1,
-    "name": "John Doe",
-    "email": "john@example.com",
-    "phone": "+628123456789",
-    "mobile": "+628123456789",
-    "website": "https://example.com",
-    "function": "Manager",
-    "title": "Mr.",
-    "lang": "en_US",
-    "x_studio_your_business": "I am a business",
-    "x_studio_id": "CUST001",
-    "vat": "12.345.678.9-012.000",
-    "street": "Jl. Contoh No. 123",
-    "street2": "RT 01/RW 02",
-    "city": "Jakarta",
-    "zip": "12345",
-    "country_id": 105,
+    "Name": "John Doe",
+    "ID": "CUST001",
+    "Street": "Jl. Contoh No. 123",
+    "Street2": "RT 01/RW 02",
+    "City": "Jakarta",
+    "Country": 105,
+    "State": 1,
+    "Zip": "12345",
+    "NPWP": "12.345.678.9-012.000",
+    "Your Business": "I am a business",
+    "Job Position": "Manager",
+    "Phone": "+628123456789",
+    "Mobile": "+628123456789",
+    "Email": "john@example.com",
+    "Website": "https://example.com",
+    "Title": "Mr.",
+    "Language": "en_US",
+    "Company Type": "person",
+    "Tags": [
+      {"id": 1, "name": "VIP"},
+      {"id": 2, "name": "Customer"}
+    ],
     "country_name": "Indonesia",
-    "state_id": 1,
-    "state_name": "DKI Jakarta",
-    "tags": ["VIP", "Customer"],
-    "tag_ids": [1, 2]
+    "state_name": "DKI Jakarta"
   },
   "message": "Contact created successfully"
 }
@@ -292,8 +313,39 @@ Mengambil semua provinsi/state berdasarkan negara.
 - **NPWP (vat)**: Harus 15 digit dengan format XX.XXX.XXX.X-XXX.XXX
 - **Email**: Harus format email yang valid
 - **Website**: Otomatis ditambahkan https:// jika tidak ada
-- **Business Type**: Harus "I am a business" atau "I am a freight forwarder"
-- **Tags (category_id)**: Harus berupa array ID tag yang valid
+- **your_business**: Harus "I am a business" atau "I am a freight forwarder"
+- **company_type**: Harus "person" (Individual) atau "company" (Company)
+- **tags**: Field many2many yang harus berupa array ID tag yang valid
+
+### Field Tags
+Field tags adalah many2many field yang memungkinkan pemilihan multiple tags:
+- **Format Input**: Array of integers `[1, 2, 3]` (ID tag)
+- **Format Output**: 
+  - `tags`: Array of objects `[{"id": 1, "name": "VIP"}, {"id": 2, "name": "Customer"}]`
+- **Validasi**: Semua ID tag harus ada di database `res.partner.category`
+- **Note**: Field `category_id` tidak dikembalikan di response untuk menghindari redundansi
+
+### Field Company Type
+Field company_type menentukan tipe kontak:
+- **"person"**: Untuk individu/perorangan (Individual)
+- **"company"**: Untuk perusahaan (Company)
+- **Default**: Jika tidak diisi, Odoo akan menggunakan default value
+
+### Field Country dan State
+Field country dan state menggunakan struktur array dengan objek:
+- **Format Input**: Array of integers `[105]` atau `[1]` (ID country/state)
+- **Format Output**: 
+  - `country`: Array of objects `[{"country_id": 105, "country_name": "Indonesia"}]`
+  - `state`: Array of objects `[{"state_id": 1, "state_name": "DKI Jakarta"}]`
+- **Validasi**: Semua ID country/state harus ada di database
+- **Note**: Field ini mengembalikan array untuk konsistensi dengan field many2many lainnya
+
+### Field ID
+Field `id` adalah ID database Odoo yang auto-increment:
+- **Format**: Integer (contoh: 1, 2, 3, 19)
+- **Sumber**: Database Odoo `res.partner.id`
+- **Fungsi**: Primary key untuk identifikasi unik kontak di database
+- **Note**: Field ini tidak bisa diubah saat create/update, hanya untuk identifikasi
 
 ### Field Opsional
 Semua field lainnya bersifat opsional dan akan diset ke `null` jika tidak diisi.
