@@ -1,95 +1,114 @@
-# Panduan Integrasi Formulir (Website → Backend Odoo)
+# Dokumentasi Singkat Quotation API
 
-Dokumen singkat ini menjelaskan cara form "Get Quote" mengirim data ke backend untuk membuat Contact dan Sales Order (Quote) di Odoo Studio.
+Tujuan: buat quotation (sale.order) dari form website, lengkap dengan contact. Ringkas, langsung pakai.
 
-## Basis URL
-- Lokal (dev): `http://127.0.0.1:5000`
+## Base URL
+- Dev: `http://127.0.0.1:5000`
 
-## Endpoint
-- `GET /states` – Ambil daftar State/City untuk dropdown
-- `GET /lookups/pickup-origins?transportation=<metode>` – List origin sesuai Transportation Method
-- `GET /lookups/pickup-destinations?transportation=<metode>` – List destination sesuai Transportation Method
-- `POST /quote/create` – Kirim semua data form (Personal Information + Shipment) sekali kirim
+## Endpoints
+- `GET /lookups/pickup-origins?transportation=<value>` – daftar origin by transportation
+- `GET /lookups/pickup-destinations?transportation=<value>` – daftar destination by transportation
+- `GET /lookups/transportation-methods` – opsi Transportation Method
+- `GET /quotes` – list quotation ringkas
+- `POST /quote/create` – buat contact + quotation
 
-## Pemetaan Field Form → Odoo
-- Bagian Personal Information (model `res.partner`)
-  - `name` → `name` (wajib)
-  - `email` → `email`
-  - `phone` → `phone`
-  - `business_type` (select) → `x_studio_your_business` ("I am a business" | "I am a freight forwarder")
-  - `state_id` (hasil pilih dropdown) → `state_id` (integer ID)
-
-- Bagian Shipment/Quote (model `sale.order`)
-  - `pickup_origin_id` (ID) → `x_studio_pickup_origin` (many2one)
-  - `pickup_destination_id` (ID) → `x_studio_pickup_destination` (many2one)
-  - `terms_condition` (Cargo Details) → `x_studio_terms_condition`
-  - `transportation_method` (select) → `x_studio_transportation_method`
-
-Wajib: semua field di atas harus tersedia sebagai field custom di Odoo Studio (tanpa fallback ke field `note`).
-
-## Alur Penggunaan di Frontend
-1) Saat halaman dimuat, panggil `GET /states` untuk mengisi dropdown State/City.
-2) Ambil opsi dropdown berdasarkan Transportation Method:
-   - `GET /lookups/pickup-origins?transportation=Ocean`
-   - `GET /lookups/pickup-destinations?transportation=Ocean`
-   Gunakan `id` dari hasil endpoint tersebut untuk field `pickup_origin_id` dan `pickup_destination_id`.
-3) Saat submit, kirim satu request ke `POST /quote/create` dengan body JSON berikut.
-
-### Request – `POST /quote/create`
+## Buat Quotation – `POST /quote/create`
 Header: `Content-Type: application/json`
 
-Body contoh:
+Field wajib:
+- `name` (contact)
+- `email` (digunakan untuk dedupe contact)
+- `pickup_origin_id` (ID)
+- `pickup_destination_id` (ID)
+- `terms_condition` (text)
+- `transportation_method` (boleh key atau label; dinormalisasi otomatis)
+
+Field opsional penting:
+- `phone`, `state_id`, `country_id`, `x_studio_your_business`
+- `salesperson_id` (ID `res.users`; dipakai untuk set Salesperson/From email)
+- Cargo fields (opsional, otomatis deteksi nama teknis di Odoo):
+  - `commodity_id` (many2one)
+  - `uom_id` (many2one)
+  - `qty` (int)
+  - `kgs_chg` (int)
+  - `kgs_wt` (int)
+  - `ratio` (float)
+
+Contoh body:
 ```json
 {
   "name": "Nama Pemohon",
   "email": "user@example.com",
   "phone": "081234567890",
-  "x_studio_your_business": "I am a business",
   "state_id": 1,
   "pickup_origin_id": 12,
   "pickup_destination_id": 34,
   "terms_condition": "Pieces, weights, dimensions, special handling...",
-  "transportation_method": "Ocean"
+  "transportation_method": "Ocean",
+  "salesperson_id": 5,
+  "commodity_id": 7,
+  "uom_id": 1,
+  "qty": 100,
+  "kgs_chg": 50,
+  "kgs_wt": 75,
+  "ratio": 1.5
 }
 ```
-Validasi minimal di sisi klien: `name`, `transportation_method`, `pickup_origin_id`, `pickup_destination_id` (dan `email` jika diwajibkan oleh UI). `state_id` diambil dari pilihan `GET /states`.
 
-Catatan:
-- `transportation_method` boleh dikirim sebagai key atau label (mis. "ocean" atau "Ocean"); backend akan menormalkan otomatis.
-- Origin/Destination harus cocok dengan `transportation_method` yang dipilih (jika tidak, backend menolak).
-
-### Respon Sukses
+Respon sukses (ringkas):
 ```json
 {
   "success": true,
   "data": {
-    "contact": { "id": 123, "name": "Nama Pemohon", "state_id": [1, "Jakarta"] },
+    "contact": {
+      "id": 123,
+      "name": "Nama Pemohon",
+      "email": "user@example.com",
+      "phone": "081234567890",
+      "country_id": 104,
+      "country_name": "Indonesia",
+      "state_id": 1,
+      "state_name": "Jakarta"
+    },
     "sales_order": {
       "id": 456,
       "name": "SO001",
       "partner_id": [123, "Nama Pemohon"],
       "state": "draft",
-      "x_studio_transportation_method": "Ocean",
-      "x_studio_pickup_origin": [12, "Origin Name"],
-      "x_studio_pickup_destination": [34, "Destination Name"],
-      "x_studio_terms_condition": "Pieces, weights, dimensions..."
-    }
+      "transportation_method": "Ocean",
+      "pickup_origin": [12, "Origin Name"],
+      "pickup_destination": [34, "Destination Name"],
+      "terms_condition": "Pieces, weights, dimensions...",
+      "commodity": 7,
+      "uom": "Unit(s)",
+      "qty": 100,
+      "kgs_chg": 50,
+      "kgs_wt": 75,
+      "ratio": 1.5
+    },
+    "contact_action": "created"
   },
   "message": "Quote created successfully"
 }
 ```
 
-## Contoh: `GET /states`
-Respon (ringkas):
-```json
-{
-  "success": true,
-  "data": [ { "id": 1, "name": "Jakarta", "country": "Indonesia" } ],
-  "count": 1
-}
+Catatan penting:
+- Origin/Destination harus sesuai `transportation_method` (kalau tidak, request ditolak).
+- Field pickup origin/destination sekarang sama-sama many2one ke model `x_pickup`; API otomatis membaca nama field, relation, dan domain dari metadata Odoo sehingga payload tetap sama walaupun technical field berubah.
+- Nama teknis field cargo (commodity/uom/qty/kgs_chg/kgs_wt/ratio) dideteksi otomatis dari label di Odoo. Tidak perlu ubah API saat nama teknis berubah.
+- Contact dideduplicate berdasarkan *name + email* (case-insensitive). Jika email berbeda, API otomatis bikin contact baru. Gunakan `force_create=true` bila ingin memaksa create baru.
+- UOM di response dikembalikan sebagai nama/label (bukan ID).
+- Untuk email “From” mengikuti Salesperson di quotation, isi `salesperson_id` dan set template From di Odoo ke `{{ object.user_id.email_formatted }}` serta gunakan SMTP yang sesuai email tersebut.
+
+## Lookup cepat
+Contoh panggilan:
+```
+GET /lookups/pickup-origins?transportation=Ocean
+GET /lookups/pickup-destinations?transportation=Ocean
+GET /lookups/transportation-methods
 ```
 
-## Error yang Umum & Solusi Singkat
-- `Invalid state_id`: pastikan `state_id` berasal dari `GET /states` dan berupa angka.
-- `Origin/Destination not allowed for selected transportation_method`: pastikan Anda mengambil ID origin/destination dari endpoint lookup menggunakan transportation method yang sama.
-- Field custom belum ada: buat field di Odoo Studio dengan nama persis: `x_studio_pickup_origin`, `x_studio_pickup_destination`, `x_studio_terms_condition`, `x_studio_transportation_method`.
+## Error umum
+- `Invalid state_id` → gunakan ID valid dari Odoo.
+- `Invalid pickup_origin_id or pickup_destination_id` → pastikan ID dari endpoint lookup.
+- `Origin/Destination not allowed for selected transportation_method` → transport harus konsisten.

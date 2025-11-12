@@ -5,9 +5,145 @@ from flask import Blueprint, request
 from app.functions.odoo_functions import ordered_jsonify
 from app.models.odoo_connection import models, ODOO_DB, uid, ODOO_API_KEY
 from functools import wraps
+import ast
 
 # Create blueprint
 quote_bp = Blueprint('quotes', __name__)
+
+def _safe_lower(value):
+    try:
+        return str(value or '').strip().casefold()
+    except Exception:
+        return ''
+
+def _parse_domain(val):
+    """
+    Parse domain value from fields_get (could be list/tuple/string).
+    Returns list.
+    """
+    if isinstance(val, (list, tuple)):
+        return list(val)
+    if isinstance(val, str):
+        try:
+            parsed = ast.literal_eval(val)
+            if isinstance(parsed, (list, tuple)):
+                return list(parsed)
+        except Exception:
+            pass
+    return []
+
+def get_sale_order_field_map():
+    """
+    Deteksi nama teknis field di sale.order berdasarkan label (string).
+    Mengembalikan dict:
+      {
+        'commodity': <field_name>,
+        'uom': <field_name>,
+        'qty': <field_name>,
+        'kgs_chg': <field_name>,
+        'kgs_wt': <field_name>,
+        'ratio': <field_name>,
+      }
+    Dengan fallback ke nama yang selama ini digunakan jika tidak ditemukan.
+    """
+    # Default fallback (nama teknis historis)
+    field_map = {
+        'commodity': 'x_studio_commodity',
+        'uom': 'x_studio_many2one_field_1ef_1j58pa43n',
+        'qty': 'x_studio_qty',
+        'kgs_chg': 'x_studio_kgs_chg_1',
+        'kgs_wt': 'x_studio_kgs_wt',
+        'ratio': 'x_studio_ratio',
+    }
+    try:
+        fields_meta = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'sale.order', 'fields_get',
+            [], {'attributes': ['string', 'type', 'relation']}
+        )
+        # Kandidat label (lowercase) untuk tiap field
+        label_candidates = {
+            'commodity': ['commodity', 'description of goods', 'commodity code'],
+            'uom': ['unit of measure', 'uom', 'uom type'],
+            'qty': ['qty', 'quantity', 'pcs'],
+            'kgs_chg': ['kgs chg', 'chargeable weight', 'chg wt', 'chg'],
+            'kgs_wt': ['kgs wt', 'actual weight', 'weight'],
+            'ratio': ['ratio', 'dim factor', 'volumetric ratio'],
+        }
+        # Pemetaan berdasarkan label string
+        for fname, meta in (fields_meta or {}).items():
+            label = _safe_lower(meta.get('string'))
+            if not label:
+                continue
+            # Coba cocokkan
+            for key, candidates in label_candidates.items():
+                if any(lbl in label for lbl in candidates):
+                    # Validasi tipe dasar wajar (tidak ketat agar fleksibel)
+                    field_map[key] = fname
+        return field_map
+    except Exception:
+        # Jika gagal, pakai fallback
+        return field_map
+
+def get_pickup_fields_meta():
+    """
+    Dapatkan metadata field pickup origin/destination (field name, relation model, domain).
+    Menggunakan label untuk deteksi dinamis; fallback ke nama historis.
+    """
+    defaults = {
+        'origin': {
+            'field': 'x_studio_pickup_origin',
+            'relation': None,
+            'domain': []
+        },
+        'destination': {
+            'field': 'x_studio_pickup_destination',
+            'relation': None,
+            'domain': []
+        }
+    }
+    try:
+        fields_meta = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'sale.order', 'fields_get',
+            [], {'attributes': ['string', 'relation', 'domain']}
+        )
+
+        def match_field(candidates, default_key):
+            for fname, meta in (fields_meta or {}).items():
+                label = _safe_lower(meta.get('string'))
+                if not label:
+                    continue
+                for cand in candidates:
+                    if cand in label:
+                        relation = meta.get('relation')
+                        domain = _parse_domain(meta.get('domain', []))
+                        return {
+                            'field': fname,
+                            'relation': relation,
+                            'domain': domain
+                        }
+            return defaults[default_key]
+
+        origin_meta = match_field(['pickup origin', 'origin'], 'origin')
+        dest_meta = match_field(['pickup destination', 'destination'], 'destination')
+
+        # Pastikan domain berbentuk list
+        origin_meta['domain'] = _parse_domain(origin_meta.get('domain', []))
+        dest_meta['domain'] = _parse_domain(dest_meta.get('domain', []))
+
+        # Jika relation tidak ditemukan, fallback ke defaults
+        if not origin_meta.get('relation'):
+            origin_meta['relation'] = defaults['origin']['relation']
+        if not dest_meta.get('relation'):
+            dest_meta['relation'] = defaults['destination']['relation']
+
+        return {
+            'origin': origin_meta,
+            'destination': dest_meta
+        }
+    except Exception:
+        return defaults
 
 def handle_odoo_errors(f):
     """Decorator to handle Odoo API errors"""
@@ -38,9 +174,9 @@ def create_quote():
             }), 400
         
         # Validasi field wajib untuk contact
-        required_contact_fields = ['name']
+        required_contact_fields = ['name', 'email']
         for field in required_contact_fields:
-            if field not in data:
+            if field not in data or not data.get(field):
                 return ordered_jsonify({
                     'success': False,
                     'error': f'Field {field} is required'
@@ -98,32 +234,38 @@ def create_quote():
                 }), 400
         
         # 1. Validasi/temukan Contact terlebih dahulu untuk menghindari duplikasi
-        # Kebijakan dedupe yang lebih ketat:
+        # Logika dedupe:
         # - Jika ada force_create = true → selalu buat baru
-        # - Jika ada email → gunakan email sebagai satu-satunya kunci dedupe
-        # - Jika tidak ada email tapi ada phone → dedupe hanya jika phone SAMA dan name juga SAMA
-        # - Jika tidak ada email & phone → JANGAN dedupe (hindari pakai name saja)
+        # - Cek name dulu (case-insensitive, trim whitespace)
+        # - Jika name sama, lanjut cek email
+        # - Jika name DAN email sama → reuse contact yang ada
+        # - Jika name sama tapi email beda → create baru (orang berbeda)
+        # - Jika name tidak ketemu → create baru
         partner_id = None
         force_create = bool(data.get('force_create', False))
-        if not force_create:
-            if data.get('email'):
-                found = models.execute_kw(
-                    ODOO_DB, uid, ODOO_API_KEY,
-                    'res.partner', 'search',
-                    [[['email', '=', data['email']]]],
-                    {'limit': 1}
-                )
-                if found:
-                    partner_id = found[0]
-            elif data.get('phone'):
-                found = models.execute_kw(
-                    ODOO_DB, uid, ODOO_API_KEY,
-                    'res.partner', 'search_read',
-                    [[['phone', '=', data['phone']]]],
-                    {'fields': ['id', 'name'], 'limit': 1}
-                )
-                if found and str(found[0].get('name', '')).strip().casefold() == str(data['name']).strip().casefold():
-                    partner_id = found[0]['id']
+        if not force_create and data.get('name') and data.get('email'):
+            # Normalisasi name untuk matching (case-insensitive, trim)
+            search_name = str(data['name']).strip()
+            search_email = str(data['email']).strip().lower()
+            
+            # Cari berdasarkan name (case-insensitive)
+            found = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                'res.partner', 'search_read',
+                [[['name', 'ilike', search_name]]],
+                {'fields': ['id', 'name', 'email'], 'limit': 10}  # Ambil beberapa untuk cek exact match
+            )
+            
+            if found:
+                # Cek exact match name (case-insensitive) dan email
+                for partner in found:
+                    partner_name = str(partner.get('name', '')).strip()
+                    partner_email = str(partner.get('email', '')).strip().lower() if partner.get('email') else ''
+                    
+                    # Exact match name (case-insensitive) dan email
+                    if partner_name.lower() == search_name.lower() and partner_email == search_email:
+                        partner_id = partner['id']
+                        break
 
         # Tentukan country_id yang akan digunakan
         # Prioritas: country_id dari request > country_id dari state > False
@@ -132,16 +274,23 @@ def create_quote():
         contact_action = 'reused'
         if not partner_id:
             # Jika contact tidak ditemukan, otomatis buat baru
+            # Hanya kirim field yang tidak None
             contact_data = {
                 'name': data['name'],
-                'email': data.get('email', False),
-                'phone': data.get('phone', False),
-                'x_studio_your_business': data.get('x_studio_your_business', False),
-                'country_id': final_country_id,
-                'state_id': data.get('state_id', False),
                 'company_type': 'person',
                 'active': True
             }
+            # Tambahkan field optional hanya jika ada nilainya
+            if data.get('email'):
+                contact_data['email'] = data['email']
+            if data.get('phone'):
+                contact_data['phone'] = data['phone']
+            if data.get('x_studio_your_business'):
+                contact_data['x_studio_your_business'] = data['x_studio_your_business']
+            if final_country_id:
+                contact_data['country_id'] = final_country_id
+            if data.get('state_id'):
+                contact_data['state_id'] = data['state_id']
             partner_id = models.execute_kw(
                 ODOO_DB, uid, ODOO_API_KEY,
                 'res.partner',
@@ -158,10 +307,10 @@ def create_quote():
                 updates['email'] = data['email']
             if data.get('phone'):
                 updates['phone'] = data['phone']
-            if 'x_studio_your_business' in data:
-                updates['x_studio_your_business'] = data.get('x_studio_your_business') or False
-            if 'state_id' in data:
-                updates['state_id'] = data.get('state_id') or False
+            if 'x_studio_your_business' in data and data.get('x_studio_your_business'):
+                updates['x_studio_your_business'] = data['x_studio_your_business']
+            if 'state_id' in data and data.get('state_id'):
+                updates['state_id'] = data['state_id']
             if final_country_id:
                 updates['country_id'] = final_country_id
             updates['active'] = True
@@ -194,39 +343,47 @@ def create_quote():
 
         data['transportation_method'] = normalize_transportation(data['transportation_method'])
 
+        # Ambil metadata pickup origin/destination (field name, relation, domain)
+        pickup_meta = get_pickup_fields_meta()
+        origin_field_meta = pickup_meta.get('origin', {})
+        dest_field_meta = pickup_meta.get('destination', {})
+
+        origin_model_name = origin_field_meta.get('relation')
+        dest_model_name = dest_field_meta.get('relation')
+
         # Validasi keberadaan record origin/destination dan kesesuaian transportation method
-        # Dapatkan technical model name dari label Studio
-        origin_model_rec = models.execute_kw(
-            ODOO_DB, uid, ODOO_API_KEY,
-            'ir.model', 'search_read',
-            [[['name', '=', 'Pickup Origin']]],
-            {'fields': ['model'], 'limit': 1}
-        )
-        dest_model_rec = models.execute_kw(
-            ODOO_DB, uid, ODOO_API_KEY,
-            'ir.model', 'search_read',
-            [[['name', '=', 'Pickup Destination']]],
-            {'fields': ['model'], 'limit': 1}
-        )
-        if not origin_model_rec or not dest_model_rec:
+        if not origin_model_name or not dest_model_name:
             return ordered_jsonify({
                 'success': False,
-                'error': 'Lookup models not found in Odoo (Pickup Origin/Destination)'
+                'error': 'Pickup field relation not found in Odoo'
             }), 500
 
-        origin_model_name = origin_model_rec[0]['model']
-        dest_model_name = dest_model_rec[0]['model']
+        def build_domain(base_domain, extra_condition):
+            domain = []
+            if base_domain:
+                domain.extend(list(base_domain))
+            domain.append(extra_condition)
+            return domain
 
-        # Pastikan ID valid
+        # Pastikan ID valid sesuai domain field
+        origin_domain = build_domain(
+            origin_field_meta.get('domain', []),
+            ['id', '=', int(data['pickup_origin_id'])]
+        )
+        dest_domain = build_domain(
+            dest_field_meta.get('domain', []),
+            ['id', '=', int(data['pickup_destination_id'])]
+        )
+
         origin_ok = models.execute_kw(
             ODOO_DB, uid, ODOO_API_KEY,
             origin_model_name, 'search_count',
-            [[['id', '=', int(data['pickup_origin_id'])]]]
+            [origin_domain]
         )
         dest_ok = models.execute_kw(
             ODOO_DB, uid, ODOO_API_KEY,
             dest_model_name, 'search_count',
-            [[['id', '=', int(data['pickup_destination_id'])]]]
+            [dest_domain]
         )
         if not origin_ok or not dest_ok:
             return ordered_jsonify({
@@ -234,21 +391,23 @@ def create_quote():
                 'error': 'Invalid pickup_origin_id or pickup_destination_id'
             }), 400
 
-        # Opsional: validasi filter transport method konsisten
-        origin_rec = models.execute_kw(
-            ODOO_DB, uid, ODOO_API_KEY,
-            origin_model_name, 'read',
-            [int(data['pickup_origin_id'])],
-            {'fields': ['x_studio_transportation_method']}
-        )
-        dest_rec = models.execute_kw(
-            ODOO_DB, uid, ODOO_API_KEY,
-            dest_model_name, 'read',
-            [int(data['pickup_destination_id'])],
-            {'fields': ['x_studio_transportation_method']}
-        )
-        if (origin_rec and origin_rec[0].get('x_studio_transportation_method') != data['transportation_method']) or \
-           (dest_rec and dest_rec[0].get('x_studio_transportation_method') != data['transportation_method']):
+        def read_transport_method(model_name, record_id):
+            try:
+                rec = models.execute_kw(
+                    ODOO_DB, uid, ODOO_API_KEY,
+                    model_name, 'read',
+                    [int(record_id)],
+                    {'fields': ['x_studio_transportation_method']}
+                )
+                return rec[0] if rec else {}
+            except Exception:
+                return {}
+
+        origin_rec = read_transport_method(origin_model_name, data['pickup_origin_id'])
+        dest_rec = read_transport_method(dest_model_name, data['pickup_destination_id'])
+
+        if (origin_rec and origin_rec.get('x_studio_transportation_method') not in (False, data['transportation_method'])) or \
+           (dest_rec and dest_rec.get('x_studio_transportation_method') not in (False, data['transportation_method'])):
             return ordered_jsonify({
                 'success': False,
                 'error': 'Origin/Destination not allowed for selected transportation_method'
@@ -256,14 +415,56 @@ def create_quote():
 
         # 2. Buat Sales Order dengan referensi ke contact
         # Tanpa fallback ke note: wajib gunakan field custom yang telah disediakan
+        origin_field_name = origin_field_meta.get('field', 'x_studio_pickup_origin')
+        dest_field_name = dest_field_meta.get('field', 'x_studio_pickup_destination')
         sales_order_data = {
             'partner_id': partner_id,  # Link ke contact yang ditemukan/dibuat
             'state': 'draft',  # Status draft untuk quotation
             'x_studio_transportation_method': data['transportation_method'],
-            'x_studio_pickup_origin': data['pickup_origin_id'],
-            'x_studio_pickup_destination': data['pickup_destination_id'],
+            origin_field_name: data['pickup_origin_id'],
+            dest_field_name: data['pickup_destination_id'],
             'x_studio_terms_condition': data['terms_condition']
         }
+        
+        # Optional: tambahkan field-field baru (commodity, uom, qty, kgs_chg, kgs_wt, ratio)
+        # Hanya kirim field yang benar-benar ada nilainya (bukan None, bukan False untuk many2one)
+        # Dan pastikan field tersebut ada di Odoo sebelum dikirim
+        so_field_map = get_sale_order_field_map()
+        try:
+            # Validasi field yang ada di Odoo
+            available_fields = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                'sale.order', 'fields_get',
+                [], {}
+            )
+        except Exception:
+            available_fields = {}
+        
+        # Hanya tambahkan field jika field tersebut ada di Odoo
+        if 'commodity_id' in data and data.get('commodity_id') not in (None, False, ''):
+            field_name = so_field_map.get('commodity')
+            if field_name and field_name in available_fields:
+                sales_order_data[field_name] = data['commodity_id']
+        if 'uom_id' in data and data.get('uom_id') not in (None, False, ''):
+            field_name = so_field_map.get('uom')
+            if field_name and field_name in available_fields:
+                sales_order_data[field_name] = data['uom_id']
+        if 'qty' in data and data.get('qty') is not None:
+            field_name = so_field_map.get('qty')
+            if field_name and field_name in available_fields:
+                sales_order_data[field_name] = data.get('qty', 0)
+        if 'kgs_chg' in data and data.get('kgs_chg') is not None:
+            field_name = so_field_map.get('kgs_chg')
+            if field_name and field_name in available_fields:
+                sales_order_data[field_name] = data.get('kgs_chg', 0)
+        if 'kgs_wt' in data and data.get('kgs_wt') is not None:
+            field_name = so_field_map.get('kgs_wt')
+            if field_name and field_name in available_fields:
+                sales_order_data[field_name] = data.get('kgs_wt', 0)
+        if 'ratio' in data and data.get('ratio') is not None:
+            field_name = so_field_map.get('ratio')
+            if field_name and field_name in available_fields:
+                sales_order_data[field_name] = data.get('ratio', 0.0)
         
         new_quote_id = models.execute_kw(
             ODOO_DB, uid, ODOO_API_KEY,
@@ -282,12 +483,13 @@ def create_quote():
         )
         
         # Ambil data sales order dengan field custom (tanpa fallback)
+        read_fields = ['id', 'name', 'partner_id', 'state', 'create_date', 'x_studio_transportation_method', origin_field_name, dest_field_name, 'x_studio_terms_condition', so_field_map['commodity'], so_field_map['uom'], so_field_map['qty'], so_field_map['kgs_chg'], so_field_map['kgs_wt'], so_field_map['ratio']]
         new_quote = models.execute_kw(
             ODOO_DB, uid, ODOO_API_KEY,
             'sale.order',
             'read',
             [new_quote_id],
-            {'fields': ['id', 'name', 'partner_id', 'state', 'create_date', 'x_studio_transportation_method', 'x_studio_pickup_origin', 'x_studio_pickup_destination', 'x_studio_terms_condition']}
+            {'fields': read_fields}
         )
         
         # Ubah nama field untuk contact
@@ -321,17 +523,51 @@ def create_quote():
             quote_data['transportation_method'] = quote_data['x_studio_transportation_method']
             del quote_data['x_studio_transportation_method']
         
-        if 'x_studio_pickup_origin' in quote_data:
-            quote_data['pickup_origin'] = quote_data['x_studio_pickup_origin']
-            del quote_data['x_studio_pickup_origin']
+        if origin_field_name in quote_data:
+            quote_data['pickup_origin'] = quote_data[origin_field_name]
+            del quote_data[origin_field_name]
         
-        if 'x_studio_pickup_destination' in quote_data:
-            quote_data['pickup_destination'] = quote_data['x_studio_pickup_destination']
-            del quote_data['x_studio_pickup_destination']
+        if dest_field_name in quote_data:
+            quote_data['pickup_destination'] = quote_data[dest_field_name]
+            del quote_data[dest_field_name]
         
         if 'x_studio_terms_condition' in quote_data:
             quote_data['terms_condition'] = quote_data['x_studio_terms_condition']
             del quote_data['x_studio_terms_condition']
+        
+        # Normalisasi field-field baru
+        if so_field_map['commodity'] in quote_data:
+            # Handle many2one: ambil ID saja jika berupa list [id, name]
+            if isinstance(quote_data[so_field_map['commodity']], list) and len(quote_data[so_field_map['commodity']]) >= 1:
+                quote_data['commodity'] = quote_data[so_field_map['commodity']][0]
+            else:
+                quote_data['commodity'] = quote_data[so_field_map['commodity']]
+            del quote_data[so_field_map['commodity']]
+        if so_field_map['uom'] in quote_data:
+            # Handle many2one: kembalikan NAMA jika berupa list [id, name]
+            if isinstance(quote_data[so_field_map['uom']], list):
+                if len(quote_data[so_field_map['uom']]) >= 2:
+                    quote_data['uom'] = quote_data[so_field_map['uom']][1]
+                elif len(quote_data[so_field_map['uom']]) >= 1:
+                    # Fallback ke id jika nama tidak tersedia
+                    quote_data['uom'] = quote_data[so_field_map['uom']][0]
+                else:
+                    quote_data['uom'] = None
+            else:
+                quote_data['uom'] = quote_data[so_field_map['uom']]
+            del quote_data[so_field_map['uom']]
+        if so_field_map['qty'] in quote_data:
+            quote_data['qty'] = quote_data[so_field_map['qty']]
+            del quote_data[so_field_map['qty']]
+        if so_field_map['kgs_chg'] in quote_data:
+            quote_data['kgs_chg'] = quote_data[so_field_map['kgs_chg']]
+            del quote_data[so_field_map['kgs_chg']]
+        if so_field_map['kgs_wt'] in quote_data:
+            quote_data['kgs_wt'] = quote_data[so_field_map['kgs_wt']]
+            del quote_data[so_field_map['kgs_wt']]
+        if so_field_map['ratio'] in quote_data:
+            quote_data['ratio'] = quote_data[so_field_map['ratio']]
+            del quote_data[so_field_map['ratio']]
         
         # Siapkan response message
         message = 'Quote created successfully'
@@ -375,12 +611,17 @@ def get_all_quotes():
         })
     
     # Ambil data sales order dengan field custom dan partner_id (tanpa state dari sales order)
+    so_field_map = get_sale_order_field_map()
+    pickup_meta = get_pickup_fields_meta()
+    origin_field_name = pickup_meta.get('origin', {}).get('field', 'x_studio_pickup_origin')
+    dest_field_name = pickup_meta.get('destination', {}).get('field', 'x_studio_pickup_destination')
+    read_fields = ['id', 'name', 'partner_id', 'create_date', 'x_studio_transportation_method', origin_field_name, dest_field_name, 'x_studio_terms_condition', so_field_map['commodity'], so_field_map['uom'], so_field_map['qty'], so_field_map['kgs_chg'], so_field_map['kgs_wt'], so_field_map['ratio']]
     quotes = models.execute_kw(
         ODOO_DB, uid, ODOO_API_KEY,
         'sale.order',
         'read',
         [quote_ids],
-        {'fields': ['id', 'name', 'partner_id', 'create_date', 'x_studio_transportation_method', 'x_studio_pickup_origin', 'x_studio_pickup_destination', 'x_studio_terms_condition']}
+        {'fields': read_fields}
     )
     
     # Ambil informasi partner untuk setiap quote
@@ -465,20 +706,52 @@ def get_all_quotes():
             quote['transportation_method'] = quote['x_studio_transportation_method']
             del quote['x_studio_transportation_method']
         
-        # Ubah x_studio_pickup_origin menjadi pickup_origin
-        if 'x_studio_pickup_origin' in quote:
-            quote['pickup_origin'] = quote['x_studio_pickup_origin']
-            del quote['x_studio_pickup_origin']
+        # Ubah pickup origin/destination menjadi nama generik
+        if origin_field_name in quote:
+            quote['pickup_origin'] = quote[origin_field_name]
+            del quote[origin_field_name]
         
-        # Ubah x_studio_pickup_destination menjadi pickup_destination
-        if 'x_studio_pickup_destination' in quote:
-            quote['pickup_destination'] = quote['x_studio_pickup_destination']
-            del quote['x_studio_pickup_destination']
+        if dest_field_name in quote:
+            quote['pickup_destination'] = quote[dest_field_name]
+            del quote[dest_field_name]
         
         # Ubah x_studio_terms_condition menjadi terms_condition
         if 'x_studio_terms_condition' in quote:
             quote['terms_condition'] = quote['x_studio_terms_condition']
             del quote['x_studio_terms_condition']
+        
+        # Normalisasi field-field baru
+        if so_field_map['commodity'] in quote:
+            # Handle many2one: ambil ID saja jika berupa list [id, name]
+            if isinstance(quote[so_field_map['commodity']], list) and len(quote[so_field_map['commodity']]) >= 1:
+                quote['commodity'] = quote[so_field_map['commodity']][0]
+            else:
+                quote['commodity'] = quote[so_field_map['commodity']]
+            del quote[so_field_map['commodity']]
+        if so_field_map['uom'] in quote:
+            # Handle many2one: kembalikan NAMA jika berupa list [id, name]
+            if isinstance(quote[so_field_map['uom']], list):
+                if len(quote[so_field_map['uom']]) >= 2:
+                    quote['uom'] = quote[so_field_map['uom']][1]
+                elif len(quote[so_field_map['uom']]) >= 1:
+                    quote['uom'] = quote[so_field_map['uom']][0]
+                else:
+                    quote['uom'] = None
+            else:
+                quote['uom'] = quote[so_field_map['uom']]
+            del quote[so_field_map['uom']]
+        if so_field_map['qty'] in quote:
+            quote['qty'] = quote[so_field_map['qty']]
+            del quote[so_field_map['qty']]
+        if so_field_map['kgs_chg'] in quote:
+            quote['kgs_chg'] = quote[so_field_map['kgs_chg']]
+            del quote[so_field_map['kgs_chg']]
+        if so_field_map['kgs_wt'] in quote:
+            quote['kgs_wt'] = quote[so_field_map['kgs_wt']]
+            del quote[so_field_map['kgs_wt']]
+        if so_field_map['ratio'] in quote:
+            quote['ratio'] = quote[so_field_map['ratio']]
+            del quote[so_field_map['ratio']]
     
     return ordered_jsonify({
         'success': True,
@@ -499,17 +772,11 @@ def get_pickup_origins():
             'error': 'Query param transportation is required'
         }), 400
 
-    # Cari technical model name berdasarkan display name "Pickup Origin"
-    origin_model = models.execute_kw(
-        ODOO_DB, uid, ODOO_API_KEY,
-        'ir.model', 'search_read',
-        [[['name', '=', 'Pickup Origin']]],
-        {'fields': ['model'], 'limit': 1}
-    )
-    if not origin_model:
+    pickup_meta = get_pickup_fields_meta()
+    origin_meta = pickup_meta.get('origin', {})
+    model_name = origin_meta.get('relation')
+    if not model_name:
         return ordered_jsonify({'success': True, 'data': [], 'count': 0})
-
-    model_name = origin_model[0]['model']
 
     # Deteksi field yang tersedia secara dinamis
     fields_meta = models.execute_kw(
@@ -539,7 +806,7 @@ def get_pickup_origins():
     if pickup_code_field:
         fields_to_read.append(pickup_code_field)
 
-    domain = []
+    domain = _parse_domain(origin_meta.get('domain', []))
     if transport_field:
         domain.append([transport_field, '=', transportation])
 
@@ -597,17 +864,11 @@ def get_pickup_destinations():
             'error': 'Query param transportation is required'
         }), 400
 
-    # Cari technical model name berdasarkan display name "Pickup Destination"
-    dest_model = models.execute_kw(
-        ODOO_DB, uid, ODOO_API_KEY,
-        'ir.model', 'search_read',
-        [[['name', '=', 'Pickup Destination']]],
-        {'fields': ['model'], 'limit': 1}
-    )
-    if not dest_model:
+    pickup_meta = get_pickup_fields_meta()
+    dest_meta = pickup_meta.get('destination', {})
+    model_name = dest_meta.get('relation')
+    if not model_name:
         return ordered_jsonify({'success': True, 'data': [], 'count': 0})
-
-    model_name = dest_model[0]['model']
 
     # Deteksi field yang tersedia secara dinamis
     fields_meta = models.execute_kw(
@@ -637,7 +898,7 @@ def get_pickup_destinations():
     if pickup_code_field:
         fields_to_read.append(pickup_code_field)
 
-    domain = []
+    domain = _parse_domain(dest_meta.get('domain', []))
     if transport_field:
         domain.append([transport_field, '=', transportation])
 
@@ -705,10 +966,13 @@ def test_quote_fields():
             })
         
         available_fields = []
+        pickup_meta = get_pickup_fields_meta()
+        origin_field_name = pickup_meta.get('origin', {}).get('field', 'x_studio_pickup_origin')
+        dest_field_name = pickup_meta.get('destination', {}).get('field', 'x_studio_pickup_destination')
         test_fields = [
             'x_studio_transportation_method',
-            'x_studio_pickup_origin', 
-            'x_studio_pickup_destination',
+            origin_field_name,
+            dest_field_name,
             'x_studio_terms_condition'
         ]
         
