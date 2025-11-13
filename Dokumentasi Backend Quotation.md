@@ -9,6 +9,8 @@ Tujuan: buat quotation (sale.order) dari form website, lengkap dengan contact. R
 - `GET /lookups/pickup-origins?transportation=<value>` – daftar origin by transportation
 - `GET /lookups/pickup-destinations?transportation=<value>` – daftar destination by transportation
 - `GET /lookups/transportation-methods` – opsi Transportation Method
+- `GET /lookups/commodities` – daftar Commodity untuk dropdown
+- `GET /lookups/uoms` – daftar Unit of Measure (UOM) untuk dropdown
 - `GET /quotes` – list quotation ringkas
 - `POST /quote/create` – buat contact + quotation
 
@@ -106,6 +108,20 @@ Contoh panggilan:
 GET /lookups/pickup-origins?transportation=Ocean
 GET /lookups/pickup-destinations?transportation=Ocean
 GET /lookups/transportation-methods
+GET /lookups/commodities
+GET /lookups/uoms
+```
+
+**Response format untuk commodities & UOMs:**
+```json
+{
+  "success": true,
+  "data": [
+    { "id": 1, "name": "Commodity Name" },
+    { "id": 2, "name": "Another Commodity" }
+  ],
+  "count": 2
+}
 ```
 
 ## Error umum

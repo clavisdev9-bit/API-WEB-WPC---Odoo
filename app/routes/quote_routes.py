@@ -1043,3 +1043,165 @@ def get_transportation_methods():
         return ordered_jsonify({'success': True, 'data': options, 'count': len(options)})
     except Exception as e:
         return ordered_jsonify({'success': False, 'error': 'Failed to fetch transportation methods', 'details': str(e)}), 500
+
+@quote_bp.route('/lookups/commodities', methods=['GET'])
+@handle_odoo_errors
+def get_commodities():
+    """Ambil list Commodity untuk dropdown.
+    
+    Response: { success, data: [{ id, name }], count }
+    """
+    try:
+        # Deteksi field commodity dari sale.order
+        so_field_map = get_sale_order_field_map()
+        commodity_field = so_field_map.get('commodity')
+        
+        if not commodity_field:
+            return ordered_jsonify({'success': True, 'data': [], 'count': 0})
+        
+        # Ambil metadata field untuk dapatkan relation model
+        fields_meta = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'sale.order', 'fields_get',
+            [commodity_field], {'attributes': ['relation', 'string']}
+        )
+        
+        relation_model = fields_meta.get(commodity_field, {}).get('relation')
+        if not relation_model:
+            return ordered_jsonify({'success': True, 'data': [], 'count': 0})
+        
+        # Ambil semua record dari model relation
+        # Cek field yang tersedia di model
+        try:
+            model_fields = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                relation_model, 'fields_get',
+                [], {'attributes': ['store', 'type']}
+            )
+            # Tentukan field yang akan di-request (hanya yang ada)
+            fields_to_read = ['id']
+            if 'name' in model_fields:
+                fields_to_read.append('name')
+            if 'display_name' in model_fields:
+                fields_to_read.append('display_name')
+            
+            # Tentukan order by (hanya field yang stored, bukan computed)
+            order_by = None
+            if 'name' in model_fields:
+                # Cek apakah name stored (bukan computed)
+                name_meta = model_fields.get('name', {})
+                if name_meta.get('store', True):  # Default True jika tidak ada info
+                    order_by = 'name'
+            # Jangan pakai display_name untuk order karena biasanya computed
+            if not order_by and 'id' in model_fields:
+                order_by = 'id'
+        except Exception:
+            fields_to_read = ['id']
+            order_by = None
+        
+        # Build search_read params
+        search_params = {'fields': fields_to_read}
+        if order_by:
+            search_params['order'] = order_by
+        
+        records = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            relation_model, 'search_read',
+            [[]],
+            search_params
+        )
+        
+        # Format response
+        options = []
+        for rec in records:
+            name = rec.get('display_name') or rec.get('name') or ''
+            options.append({
+                'id': rec.get('id'),
+                'name': name
+            })
+        
+        return ordered_jsonify({'success': True, 'data': options, 'count': len(options)})
+    
+    except Exception as e:
+        return ordered_jsonify({'success': False, 'error': 'Failed to fetch commodities', 'details': str(e)}), 500
+
+@quote_bp.route('/lookups/uoms', methods=['GET'])
+@handle_odoo_errors
+def get_uoms():
+    """Ambil list Unit of Measure (UOM) untuk dropdown.
+    
+    Response: { success, data: [{ id, name }], count }
+    """
+    try:
+        # Deteksi field UOM dari sale.order
+        so_field_map = get_sale_order_field_map()
+        uom_field = so_field_map.get('uom')
+        
+        if not uom_field:
+            return ordered_jsonify({'success': True, 'data': [], 'count': 0})
+        
+        # Ambil metadata field untuk dapatkan relation model
+        fields_meta = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            'sale.order', 'fields_get',
+            [uom_field], {'attributes': ['relation', 'string']}
+        )
+        
+        relation_model = fields_meta.get(uom_field, {}).get('relation')
+        if not relation_model:
+            return ordered_jsonify({'success': True, 'data': [], 'count': 0})
+        
+        # Ambil semua record dari model relation (biasanya uom.uom)
+        # Cek field yang tersedia di model
+        try:
+            model_fields = models.execute_kw(
+                ODOO_DB, uid, ODOO_API_KEY,
+                relation_model, 'fields_get',
+                [], {'attributes': ['store', 'type']}
+            )
+            # Tentukan field yang akan di-request (hanya yang ada)
+            fields_to_read = ['id']
+            if 'name' in model_fields:
+                fields_to_read.append('name')
+            if 'display_name' in model_fields:
+                fields_to_read.append('display_name')
+            
+            # Tentukan order by (hanya field yang stored, bukan computed)
+            order_by = None
+            if 'name' in model_fields:
+                # Cek apakah name stored (bukan computed)
+                name_meta = model_fields.get('name', {})
+                if name_meta.get('store', True):  # Default True jika tidak ada info
+                    order_by = 'name'
+            # Jangan pakai display_name untuk order karena biasanya computed
+            if not order_by and 'id' in model_fields:
+                order_by = 'id'
+        except Exception:
+            fields_to_read = ['id']
+            order_by = None
+        
+        # Build search_read params
+        search_params = {'fields': fields_to_read}
+        if order_by:
+            search_params['order'] = order_by
+        
+        records = models.execute_kw(
+            ODOO_DB, uid, ODOO_API_KEY,
+            relation_model, 'search_read',
+            [[]],
+            search_params
+        )
+        
+        # Format response
+        options = []
+        for rec in records:
+            name = rec.get('display_name') or rec.get('name') or ''
+            options.append({
+                'id': rec.get('id'),
+                'name': name
+            })
+        
+        return ordered_jsonify({'success': True, 'data': options, 'count': len(options)})
+    
+    except Exception as e:
+        return ordered_jsonify({'success': False, 'error': 'Failed to fetch UOMs', 'details': str(e)}), 500
