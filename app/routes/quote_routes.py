@@ -88,6 +88,8 @@ def get_sale_order_field_map():
 def get_pickup_fields_meta():
     """
     Dapatkan metadata field pickup origin/destination (field name, relation model, domain).
+    Note: Origin dan destination sekarang many2one ke model yang sama (x_pickup),
+    tapi mungkin punya domain berbeda untuk membedakan origin vs destination.
     Menggunakan label untuk deteksi dinamis; fallback ke nama historis.
     """
     defaults = {
@@ -352,6 +354,8 @@ def create_quote():
         dest_model_name = dest_field_meta.get('relation')
 
         # Validasi keberadaan record origin/destination dan kesesuaian transportation method
+        # Note: origin dan destination sekarang many2one ke model yang sama (x_pickup)
+        # tapi punya domain berbeda untuk membedakan origin vs destination
         if not origin_model_name or not dest_model_name:
             return ordered_jsonify({
                 'success': False,
@@ -761,6 +765,97 @@ def get_all_quotes():
 
 # ===================== LOOKUP ENDPOINTS =====================
 
+def _get_pickup_records(pickup_type='origin', transportation=None):
+    """
+    Helper function untuk ambil list pickup (origin atau destination).
+    
+    Args:
+        pickup_type: 'origin' atau 'destination'
+        transportation: transportation method untuk filter
+    
+    Returns:
+        List of records dengan field yang sudah dinormalisasi
+    """
+    if not transportation:
+        return []
+    
+    pickup_meta = get_pickup_fields_meta()
+    meta = pickup_meta.get(pickup_type, {})
+    model_name = meta.get('relation')
+    
+    if not model_name:
+        return []
+    
+    # Deteksi field yang tersedia secara dinamis
+    fields_meta = models.execute_kw(
+        ODOO_DB, uid, ODOO_API_KEY,
+        model_name, 'fields_get',
+        [], {'attributes': ['type', 'string']}
+    )
+    
+    def pick_field(candidates):
+        for cand in candidates:
+            if cand in fields_meta:
+                return cand
+        return None
+    
+    address_field = pick_field(['x_name', 'x_studio_pickup_address', 'x_studio_address', 'x_studio_address_pickup', 'address', 'name'])
+    country_field = pick_field(['x_studio_country', 'country_id', 'x_studio_country_id'])
+    pickup_code_field = pick_field(['x_studio_pickup_code'])
+    transport_field = pick_field(['x_studio_transportation_method', 'transportation_method', 'x_transportation_method', 'x_transportation'])
+    
+    fields_to_read = ['id']
+    if address_field:
+        fields_to_read.append(address_field)
+    if country_field:
+        fields_to_read.append(country_field)
+    if pickup_code_field:
+        fields_to_read.append(pickup_code_field)
+    
+    # Build domain: domain dari field + filter transportation
+    domain = _parse_domain(meta.get('domain', []))
+    if transport_field:
+        domain.append([transport_field, '=', transportation])
+    
+    records = models.execute_kw(
+        ODOO_DB, uid, ODOO_API_KEY,
+        model_name, 'search_read',
+        [domain],
+        {'fields': fields_to_read}
+    )
+    
+    # Normalisasi response
+    for rec in records:
+        if 'display_name' in rec:
+            del rec['display_name']
+        
+        # Normalisasi alamat
+        if address_field and address_field in rec:
+            field_name = 'pickup_origin_address' if pickup_type == 'origin' else 'pickup_destination_address'
+            rec[field_name] = rec[address_field]
+            del rec[address_field]
+        
+        # Normalisasi country
+        if country_field and country_field in rec:
+            rec['country'] = rec[country_field]
+            del rec[country_field]
+        
+        # Tambahkan pickup_code jika ada
+        if pickup_code_field and pickup_code_field in rec:
+            rec['pickup_code'] = rec[pickup_code_field]
+            del rec[pickup_code_field]
+            
+            # Tambahkan country_name
+            if isinstance(rec.get('country'), list) and len(rec['country']) == 2:
+                rec['country_name'] = rec['country'][1]
+            else:
+                rec['country_name'] = None
+        else:
+            rec['country'] = None
+            rec['country_name'] = None
+    
+    return records
+
 @quote_bp.route('/lookups/pickup-origins', methods=['GET'])
 @handle_odoo_errors
 def get_pickup_origins():
@@ -772,84 +867,7 @@ def get_pickup_origins():
             'error': 'Query param transportation is required'
         }), 400
 
-    pickup_meta = get_pickup_fields_meta()
-    origin_meta = pickup_meta.get('origin', {})
-    model_name = origin_meta.get('relation')
-    if not model_name:
-        return ordered_jsonify({'success': True, 'data': [], 'count': 0})
-
-    # Deteksi field yang tersedia secara dinamis
-    fields_meta = models.execute_kw(
-        ODOO_DB, uid, ODOO_API_KEY,
-        model_name, 'fields_get',
-        [], {'attributes': ['type', 'string']}
-    )
-
-    def pick_field(candidates):
-        for cand in candidates:
-            if cand in fields_meta:
-                return cand
-        return None
-
-    # Berdasarkan struktur terbaru: x_name (Pickup Address), x_studio_country, x_studio_pickup_code, x_studio_transportation_method
-    address_field = pick_field(['x_name', 'x_studio_pickup_address', 'x_studio_address', 'x_studio_address_pickup', 'address', 'name'])
-    country_field = pick_field(['x_studio_country', 'country_id', 'x_studio_country_id'])
-    pickup_code_field = pick_field(['x_studio_pickup_code'])
-    transport_field = pick_field(['x_studio_transportation_method', 'transportation_method', 'x_transportation_method', 'x_transportation'])
-
-    # Jangan minta alias; tidak perlu display_name
-    fields_to_read = ['id']
-    if address_field:
-        fields_to_read.append(address_field)
-    if country_field:
-        fields_to_read.append(country_field)
-    if pickup_code_field:
-        fields_to_read.append(pickup_code_field)
-
-    domain = _parse_domain(origin_meta.get('domain', []))
-    if transport_field:
-        domain.append([transport_field, '=', transportation])
-
-    records = models.execute_kw(
-        ODOO_DB, uid, ODOO_API_KEY,
-        model_name, 'search_read',
-        [domain],
-        {'fields': fields_to_read}
-    )
-
-    # Rapikan country menjadi string nama dan ubah nama field
-    for rec in records:
-        # Hapus display_name jika terbawa
-        if 'display_name' in rec:
-            del rec['display_name']
-
-        # Normalisasi alamat
-        if address_field and address_field in rec:
-            rec['pickup_origin_address'] = rec[address_field]
-            if address_field in rec:
-                del rec[address_field]
-        
-        # Normalisasi country
-        if country_field and country_field in rec:
-            rec['country'] = rec[country_field]
-            if country_field in rec:
-                del rec[country_field]
-
-        # Tambahkan pickup_code jika ada
-        if pickup_code_field and pickup_code_field in rec:
-            rec['pickup_code'] = rec[pickup_code_field]
-            if pickup_code_field in rec:
-                del rec[pickup_code_field]
-            
-            # Tambahkan country_name
-            if isinstance(rec.get('country'), list) and len(rec['country']) == 2:
-                rec['country_name'] = rec['country'][1]
-            else:
-                rec['country_name'] = None
-        else:
-            rec['country'] = None
-            rec['country_name'] = None
-
+    records = _get_pickup_records('origin', transportation)
     return ordered_jsonify({'success': True, 'data': records, 'count': len(records)})
 
 
@@ -864,84 +882,7 @@ def get_pickup_destinations():
             'error': 'Query param transportation is required'
         }), 400
 
-    pickup_meta = get_pickup_fields_meta()
-    dest_meta = pickup_meta.get('destination', {})
-    model_name = dest_meta.get('relation')
-    if not model_name:
-        return ordered_jsonify({'success': True, 'data': [], 'count': 0})
-
-    # Deteksi field yang tersedia secara dinamis
-    fields_meta = models.execute_kw(
-        ODOO_DB, uid, ODOO_API_KEY,
-        model_name, 'fields_get',
-        [], {'attributes': ['type', 'string']}
-    )
-
-    def pick_field(candidates):
-        for cand in candidates:
-            if cand in fields_meta:
-                return cand
-        return None
-
-    # Berdasarkan struktur terbaru: x_name (Pickup Address), x_studio_country, x_studio_pickup_code, x_studio_transportation_method
-    address_field = pick_field(['x_name', 'x_studio_pickup_address', 'x_studio_address', 'x_studio_address_pickup', 'address', 'name'])
-    country_field = pick_field(['x_studio_country', 'country_id', 'x_studio_country_id'])
-    pickup_code_field = pick_field(['x_studio_pickup_code'])
-    transport_field = pick_field(['x_studio_transportation_method', 'transportation_method', 'x_transportation_method', 'x_transportation'])
-
-    # Jangan minta alias; tidak perlu display_name
-    fields_to_read = ['id']
-    if address_field:
-        fields_to_read.append(address_field)
-    if country_field:
-        fields_to_read.append(country_field)
-    if pickup_code_field:
-        fields_to_read.append(pickup_code_field)
-
-    domain = _parse_domain(dest_meta.get('domain', []))
-    if transport_field:
-        domain.append([transport_field, '=', transportation])
-
-    records = models.execute_kw(
-        ODOO_DB, uid, ODOO_API_KEY,
-        model_name, 'search_read',
-        [domain],
-        {'fields': fields_to_read}
-    )
-
-    # Rapikan country menjadi string nama dan ubah nama field
-    for rec in records:
-        # Hapus display_name jika terbawa
-        if 'display_name' in rec:
-            del rec['display_name']
-
-        # Normalisasi alamat
-        if address_field and address_field in rec:
-            rec['pickup_destination_address'] = rec[address_field]
-            if address_field in rec:
-                del rec[address_field]
-        
-        # Normalisasi country
-        if country_field and country_field in rec:
-            rec['country'] = rec[country_field]
-            if country_field in rec:
-                del rec[country_field]
-
-        # Tambahkan pickup_code jika ada
-        if pickup_code_field and pickup_code_field in rec:
-            rec['pickup_code'] = rec[pickup_code_field]
-            if pickup_code_field in rec:
-                del rec[pickup_code_field]
-            
-            # Tambahkan country_name
-            if isinstance(rec.get('country'), list) and len(rec['country']) == 2:
-                rec['country_name'] = rec['country'][1]
-            else:
-                rec['country_name'] = None
-        else:
-            rec['country'] = None
-            rec['country_name'] = None
-
+    records = _get_pickup_records('destination', transportation)
     return ordered_jsonify({'success': True, 'data': records, 'count': len(records)})
 
 @quote_bp.route('/quotes/test-fields', methods=['GET'])
