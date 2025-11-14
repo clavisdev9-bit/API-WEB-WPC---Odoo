@@ -434,6 +434,36 @@ def create_quote():
         # Hanya kirim field yang benar-benar ada nilainya (bukan None, bukan False untuk many2one)
         # Dan pastikan field tersebut ada di Odoo sebelum dikirim
         so_field_map = get_sale_order_field_map()
+
+        # Jika ada uom_id, isi ratio otomatis dari factor di model UOM
+        uom_id_value = data.get('uom_id')
+        if uom_id_value not in (None, False, ''):
+            uom_model_name = 'uom.uom'
+            uom_field_name = so_field_map.get('uom')
+            if uom_field_name:
+                try:
+                    uom_field_meta = models.execute_kw(
+                        ODOO_DB, uid, ODOO_API_KEY,
+                        'sale.order', 'fields_get',
+                        [uom_field_name], {'attributes': ['relation']}
+                    )
+                    uom_model_name = uom_field_meta.get(uom_field_name, {}).get('relation') or uom_model_name
+                except Exception:
+                    pass
+            try:
+                uom_rec = models.execute_kw(
+                    ODOO_DB, uid, ODOO_API_KEY,
+                    uom_model_name, 'read',
+                    [int(uom_id_value)],
+                    {'fields': ['factor']}
+                )
+            except Exception:
+                uom_rec = []
+            if uom_rec:
+                uom_factor = uom_rec[0].get('factor')
+                if uom_factor is not None:
+                    data['ratio'] = uom_factor
+
         try:
             # Validasi field yang ada di Odoo
             available_fields = models.execute_kw(
@@ -1106,6 +1136,8 @@ def get_uoms():
                 fields_to_read.append('name')
             if 'display_name' in model_fields:
                 fields_to_read.append('display_name')
+            if 'factor' in model_fields:
+                fields_to_read.append('factor')
             
             # Tentukan order by (hanya field yang stored, bukan computed)
             order_by = None
@@ -1139,7 +1171,8 @@ def get_uoms():
             name = rec.get('display_name') or rec.get('name') or ''
             options.append({
                 'id': rec.get('id'),
-                'name': name
+                'name': name,
+                'factor': rec.get('factor')
             })
         
         return ordered_jsonify({'success': True, 'data': options, 'count': len(options)})

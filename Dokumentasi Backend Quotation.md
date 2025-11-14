@@ -30,11 +30,11 @@ Field opsional penting:
 - `salesperson_id` (ID `res.users`; dipakai untuk set Salesperson/From email)
 - Cargo fields (opsional, otomatis deteksi nama teknis di Odoo):
   - `commodity_id` (many2one)
-  - `uom_id` (many2one)
+  - `uom_id` (many2one) → jika diisi, field `ratio` otomatis mengikuti `factor` di UOM
   - `qty` (int)
   - `kgs_chg` (int)
   - `kgs_wt` (int)
-  - `ratio` (float)
+  - `ratio` (float, otomatis dari UOM jika `uom_id` diisi)
 
 Contoh body:
 ```json
@@ -52,8 +52,7 @@ Contoh body:
   "uom_id": 1,
   "qty": 100,
   "kgs_chg": 50,
-  "kgs_wt": 75,
-  "ratio": 1.5
+  "kgs_wt": 75
 }
 ```
 
@@ -123,6 +122,19 @@ GET /lookups/uoms
   "count": 2
 }
 ```
+
+```json
+{
+  "success": true,
+  "data": [
+    { "id": 1, "name": "Kilogram", "factor": 1.0 },
+    { "id": 2, "name": "Gram", "factor": 0.001 }
+  ],
+  "count": 2
+}
+```
+
+Untuk UOM, setiap item juga menyertakan field `factor` (nilai rasio yang akan diisikan otomatis saat `uom_id` dipilih).
 
 ## Error umum
 - `Invalid state_id` → gunakan ID valid dari Odoo.
